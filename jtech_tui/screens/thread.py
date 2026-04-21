@@ -321,7 +321,8 @@ class ThreadScreen(Screen):
     BINDINGS = [
         Binding("escape", "back", "Back"),
         Binding("q", "back", "Back"),
-        Binding("r", "reply", "Reply"),
+        Binding("r", "reply", "Reply↩post"),
+        Binding("t", "reply_topic", "Reply↩topic"),
         Binding("Q", "quote_reply", "Quote"),
         Binding("y", "yank", "Copy"),
         Binding("u", "user_profile", "Profile"),
@@ -674,6 +675,21 @@ class ThreadScreen(Screen):
             self.app.notify("Empty reply — not posted.", severity="warning")
             return
         self._submit_reply(body, reply_to_post_number)
+
+    def action_reply_topic(self) -> None:
+        if not self._thread:
+            return
+        tmpl = "<!-- reply to topic; save & quit to post -->\n\n"
+        with self.app.suspend():
+            content = edit_markdown(tmpl)
+        self.refresh()
+        if not content:
+            return
+        body = _strip_template(content).strip()
+        if not body:
+            self.app.notify("Empty reply — not posted.", severity="warning")
+            return
+        self._submit_reply(body, None)
 
     def _highlighted_post(self) -> dict | None:
         posts_list = self.query_one("#posts", PostsList)
