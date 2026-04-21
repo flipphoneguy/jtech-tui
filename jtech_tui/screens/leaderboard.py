@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from rich.text import Text
+
 from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding
@@ -72,8 +74,9 @@ class LeaderboardScreen(Screen):
 
     def _header_text(self, name: str) -> str:
         if self._period_filter_disabled:
-            return f"{name}"
-        return f"{name} · {self._period}   ([/] to change period)"
+            return name
+        # Escape brackets so Rich/Textual doesn't interpret [/] as a markup tag.
+        return f"{name} · {self._period}   (\\[/\\] to change period)"
 
     @work(thread=True, exclusive=True, group="lb-resolve")
     def _resolve_id_and_fetch(self) -> None:
@@ -124,6 +127,20 @@ class LeaderboardScreen(Screen):
         self.query_one("#thread-header", Static).update(self._header_text(name))
         t = self.query_one("#tbl-lb", DataTable)
         t.clear()
+
+        # Pinned "you" row at the top.
+        personal = (data.get("personal") or {}).get("user") or {}
+        you_name = personal.get("username") or ""
+        if you_name:
+            you_pos = str(personal.get("position") or "?")
+            you_score = str(personal.get("total_score") or 0)
+            t.add_row(
+                Text(you_pos, style="bold cyan"),
+                Text(f"@{you_name}  ★", style="bold cyan"),
+                Text(you_score, style="bold cyan"),
+                key=f"you:{you_name}",
+            )
+
         users = data.get("users") or []
         seen: set[str] = set()
         fallback_rank = 0
@@ -140,15 +157,7 @@ class LeaderboardScreen(Screen):
             if score is None:
                 score = u.get("score", 0)
             t.add_row(str(pos), f"@{uname}", str(score), key=f"u:{uname}")
-        personal = (data.get("personal") or {}).get("user") or {}
-        if personal.get("username") and personal["username"] not in seen:
-            # Show the current user's row at the bottom if they're off the page.
-            t.add_row(
-                str(personal.get("position") or "?"),
-                f"@{personal['username']}  (you)",
-                str(personal.get("total_score") or 0),
-                key=f"u:{personal['username']}",
-            )
+
         self._hide_loading()
         self.call_after_refresh(t.focus)
 
@@ -156,6 +165,11 @@ class LeaderboardScreen(Screen):
     def _row_selected(self, event: DataTable.RowSelected) -> None:
         key_obj = event.row_key
         key = key_obj.value if hasattr(key_obj, "value") else str(key_obj)
-        if key and key.startswith("u:"):
-            uname = key[2:].split()[0]  # strip "(you)"
+        if not key:
+            return
+        if key.startswith("u:"):
+            uname = key[2:]
+            self.app.push_screen(UserProfileScreen(uname))
+        elif key.startswith("you:"):
+            uname = key[4:]
             self.app.push_screen(UserProfileScreen(uname))

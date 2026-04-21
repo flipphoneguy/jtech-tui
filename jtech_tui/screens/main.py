@@ -61,8 +61,12 @@ def _pretty_time(s: str) -> str:
     if secs < 86400:
         return f"{secs // 3600}h"
     days = secs // 86400
-    if days < 365:
+    if days < 7:
         return f"{days}d"
+    if days < 30:
+        return f"{days // 7}w"
+    if days < 365:
+        return f"{days // 30}mo"
     return f"{days // 365}y"
 
 

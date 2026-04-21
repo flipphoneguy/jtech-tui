@@ -3,9 +3,11 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
+from datetime import datetime, timezone
 from html.parser import HTMLParser
 
 from textual import on, work
+from textual.message import Message
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.screen import Screen
@@ -144,8 +146,8 @@ def _post_markdown(
     body = post.get("raw") or _strip_html(post.get("cooked", ""))
     body = _render_quotes(body)
     who = post.get("username") or "?"
-    when = post.get("created_at", "")
-    header = f"**@{who}** · *{when}*"
+    when = _time_ago(post.get("created_at", ""))
+    header = f"**@{who}** · {when}"
     pn = post.get("post_number")
     if isinstance(pn, int):
         header = f"{header}   —   **#{pn}**"
@@ -163,6 +165,31 @@ def _post_markdown(
         preview = "\n".join(lines[:6])
         body = f"{preview}\n\n*…collapsed ({len(lines)} lines). Press `x` to expand.*"
     return f"{header}\n\n{breadcrumb}{body}"
+
+
+def _time_ago(s: str) -> str:
+    """Convert an ISO timestamp to a short relative string like 3h, 2d, 1mo."""
+    if not s:
+        return ""
+    try:
+        t = datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except ValueError:
+        return s
+    secs = int((datetime.now(timezone.utc) - t).total_seconds())
+    if secs < 60:
+        return "now"
+    if secs < 3600:
+        return f"{secs // 60}m"
+    if secs < 86400:
+        return f"{secs // 3600}h"
+    days = secs // 86400
+    if days < 7:
+        return f"{days}d"
+    if days < 30:
+        return f"{days // 7}w"
+    if days < 365:
+        return f"{days // 30}mo"
+    return f"{days // 365}y"
 
 
 def _copy_to_clipboard(text: str) -> bool:
@@ -230,10 +257,16 @@ class PostItem(ListItem):
 class PostsList(ListView):
     """ListView with vim-style bindings and scroll-within-post for long posts.
 
-    If the currently highlighted post extends beyond the viewport, down/up
-    first scrolls the viewport; only when the post is fully visible does the
-    cursor move to the next/previous item.
+    Emits ``NeedMore`` when the cursor tries to move past the first or last
+    loaded post so the parent screen can lazy-load the next chunk.
     """
+
+    class NeedMore(Message):
+        """Emitted when the user navigates past the end/start of loaded posts."""
+        def __init__(self, posts_list: "PostsList", direction: str) -> None:
+            super().__init__()
+            self.posts_list = posts_list
+            self.direction = direction  # "above" | "below"
 
     BINDINGS = [
         Binding("j", "cursor_down", "Down", show=False),
@@ -261,15 +294,26 @@ class PostsList(ListView):
             if region.y + region.height > self.scroll_y + self.size.height:
                 self.scroll_relative(y=self._scroll_step(), animate=False)
                 return
+        n = len(self._nodes)
+        if n and isinstance(self.index, int) and self.index >= n - 1:
+            self.post_message(self.NeedMore(self, "below"))
+            return
         super().action_cursor_down()
 
     def action_cursor_up(self) -> None:
+        # Clamp a stale index before anything else (can happen after merge/remove).
+        n = len(self._nodes)
+        if isinstance(self.index, int) and n > 0 and self.index >= n:
+            self.index = n - 1
         highlighted = self.highlighted_child
         if highlighted is not None:
             region = highlighted.virtual_region
             if region.y < self.scroll_y:
                 self.scroll_relative(y=-self._scroll_step(), animate=False)
                 return
+        if self.index == 0:
+            self.post_message(self.NeedMore(self, "above"))
+            return
         super().action_cursor_up()
 
 
@@ -303,6 +347,10 @@ class ThreadScreen(Screen):
         self._topic_id = int(topic.get("id", 0))
         self._thread: dict | None = None
         self._auto_refresh = None  # Timer handle
+        self._stream: list[int] = []       # all post_ids in order (from server)
+        self._loaded_ids: set[int] = set() # post_ids currently in the list widget
+        self._loading_above = False
+        self._loading_below = False
 
     def on_unmount(self) -> None:
         if self._auto_refresh is not None:
@@ -327,8 +375,11 @@ class ThreadScreen(Screen):
 
     @work(thread=True, exclusive=True, group="thread")
     def _fetch(self) -> None:
+        # Open the thread near the last-read post so we land in the right place.
+        last_read = self._topic.get("last_read_post_number")
+        near_post = last_read if isinstance(last_read, int) and last_read > 1 else None
         try:
-            thread = self.app.client.thread(self._topic_id)
+            thread = self.app.client.thread(self._topic_id, near_post=near_post)
         except Unauthorized:
             self.app.call_from_thread(self.app.reauth)
             return
@@ -338,47 +389,16 @@ class ThreadScreen(Screen):
             )
             return
         self.app.call_from_thread(self._display_thread, thread)
-        stream = ((thread.get("post_stream") or {}).get("stream") or [])
-        have = {
-            p.get("id")
-            for p in ((thread.get("post_stream") or {}).get("posts") or [])
-            if isinstance(p.get("id"), int)
-        }
-        missing = [pid for pid in stream if isinstance(pid, int) and pid not in have]
-        if missing:
-            self._fill_missing(missing)
-
-    @work(thread=True, exclusive=True, group="thread-fill")
-    def _fill_missing(self, missing_ids: list[int]) -> None:
-        try:
-            extras = self.app.client.thread_fill_missing(self._topic_id, missing_ids)
-        except Exception:  # noqa: BLE001
-            return
-        if not extras:
-            return
-        self.app.call_from_thread(self._append_fetched_posts, extras)
-
-    def _append_fetched_posts(self, posts: list[dict]) -> None:
-        if not self._thread:
-            return
-        existing = self._thread.get("post_stream") or {}
-        cur = existing.get("posts") or []
-        by_id: dict[int, dict] = {
-            p.get("id"): p for p in cur if isinstance(p.get("id"), int)
-        }
-        for p in posts:
-            pid = p.get("id")
-            if isinstance(pid, int) and pid not in by_id:
-                by_id[pid] = p
-        merged = list(by_id.values())
-        merged.sort(key=lambda p: p.get("post_number") or 0)
-        existing["posts"] = merged
-        fresh = dict(self._thread)
-        fresh["post_stream"] = existing
-        self._merge_new_posts(fresh, notify=False)
+        # Posts beyond the initial chunk are loaded lazily on scroll.
 
     def _display_thread(self, thread: dict) -> None:
         self._thread = thread
+        # Record the full ordered list of post_ids so we can lazy-load chunks.
+        self._stream = [
+            pid for pid in ((thread.get("post_stream") or {}).get("stream") or [])
+            if isinstance(pid, int)
+        ]
+        self._loaded_ids.clear()
         self.query_one("#loader", LoadingIndicator).display = False
         posts_list = self.query_one("#posts", PostsList)
         posts_list.display = True
@@ -398,9 +418,11 @@ class ThreadScreen(Screen):
                     parent_user = parent.get("username")
             raw = p.get("raw") or _strip_html(p.get("cooked", ""))
             long_post = len(raw.splitlines()) > _COLLAPSE_THRESHOLD
-            posts_list.append(
-                PostItem(p, reply_to_username=parent_user, collapsed=long_post)
-            )
+            item = PostItem(p, reply_to_username=parent_user, collapsed=long_post)
+            posts_list.append(item)
+            pid = p.get("id")
+            if isinstance(pid, int):
+                self._loaded_ids.add(pid)
         # Resume behavior: open at first unread if there's unread content,
         # otherwise at the last post we've seen, mirroring Discourse web.
         # Never-opened threads (last_read == 0/None) start at the top.
@@ -428,6 +450,167 @@ class ThreadScreen(Screen):
             posts_list.index = start_idx
             posts_list.children[start_idx].scroll_visible()
         posts_list.focus()
+        pns = [
+            item.post.get("post_number")
+            for item in posts_list.children
+            if isinstance(item, PostItem) and isinstance(item.post.get("post_number"), int)
+        ]
+        if pns:
+            self._track_read(pns)
+
+    @work(thread=True, exclusive=False, group="read-track")
+    def _track_read(self, post_numbers: list[int]) -> None:
+        """Fire-and-forget: tell the server these posts were read."""
+        try:
+            self.app.client.mark_read(self._topic_id, post_numbers)
+        except Exception:  # noqa: BLE001
+            pass
+
+    # --- lazy post loading ---
+
+    def _ids_to_load_below(self, n: int = 20) -> list[int]:
+        if not self._loaded_ids:
+            return self._stream[:n] if self._stream else []
+        last_pos = -1
+        for i, pid in enumerate(self._stream):
+            if pid in self._loaded_ids:
+                last_pos = i
+        if last_pos < 0 or last_pos >= len(self._stream) - 1:
+            return []
+        end = min(last_pos + 1 + n, len(self._stream))
+        return [pid for pid in self._stream[last_pos + 1: end] if pid not in self._loaded_ids]
+
+    def _ids_to_load_above(self, n: int = 20) -> list[int]:
+        if not self._loaded_ids:
+            return []
+        first_pos = len(self._stream)
+        for i, pid in enumerate(self._stream):
+            if pid in self._loaded_ids:
+                first_pos = i
+                break
+        if first_pos == 0:
+            return []
+        start = max(0, first_pos - n)
+        return [pid for pid in self._stream[start: first_pos] if pid not in self._loaded_ids]
+
+    @on(PostsList.NeedMore)
+    def _on_need_more(self, event: PostsList.NeedMore) -> None:
+        if event.direction == "below":
+            if not self._loading_below and self._ids_to_load_below():
+                self._loading_below = True
+                self._load_more_below()
+        elif event.direction == "above":
+            if not self._loading_above and self._ids_to_load_above():
+                self._loading_above = True
+                self._load_more_above()
+
+    @work(thread=True, exclusive=True, group="thread-below")
+    def _load_more_below(self) -> None:
+        ids = self._ids_to_load_below()
+        if not ids:
+            self._loading_below = False
+            return
+        try:
+            posts = self.app.client.thread_fill_missing(self._topic_id, ids)
+        except Exception:  # noqa: BLE001
+            self._loading_below = False
+            return
+        if posts:
+            self.app.call_from_thread(self._append_posts_below, posts)
+        else:
+            self._loading_below = False
+
+    def _append_posts_below(self, posts: list[dict]) -> None:
+        self._insert_posts(posts)
+        self._loading_below = False
+        pns = [p.get("post_number") for p in posts if isinstance(p.get("post_number"), int)]
+        if pns:
+            self._track_read(pns)
+
+    @work(thread=True, exclusive=True, group="thread-above")
+    def _load_more_above(self) -> None:
+        ids = self._ids_to_load_above()
+        if not ids:
+            self._loading_above = False
+            return
+        try:
+            posts = self.app.client.thread_fill_missing(self._topic_id, ids)
+        except Exception:  # noqa: BLE001
+            self._loading_above = False
+            return
+        if posts:
+            self.app.call_from_thread(self._prepend_posts_above, posts)
+        else:
+            self._loading_above = False
+
+    def _prepend_posts_above(self, posts: list[dict]) -> None:
+        posts_list = self.query_one("#posts", PostsList)
+        saved_idx = posts_list.index
+        n_inserted = self._insert_posts(posts)
+        # All inserted posts are above the previous first item, so shift the cursor.
+        if isinstance(saved_idx, int) and n_inserted > 0:
+            posts_list.index = saved_idx + n_inserted
+        self._loading_above = False
+        pns = [p.get("post_number") for p in posts if isinstance(p.get("post_number"), int)]
+        if pns:
+            self._track_read(pns)
+
+    def _insert_posts(self, posts: list[dict]) -> int:
+        """Insert posts into the list at correct post_number positions.
+
+        Returns the number of new items actually inserted (skips duplicates).
+        """
+        posts_list = self.query_one("#posts", PostsList)
+        sorted_posts = sorted(posts, key=lambda p: p.get("post_number") or 0)
+        # Build a by_number map covering both existing and incoming posts.
+        by_number: dict[int, dict] = {}
+        for item in posts_list.children:
+            if isinstance(item, PostItem):
+                pn = item.post.get("post_number")
+                if isinstance(pn, int):
+                    by_number[pn] = item.post
+        for p in sorted_posts:
+            pn = p.get("post_number")
+            if isinstance(pn, int):
+                by_number[pn] = p
+        existing_ordered = [c for c in posts_list.children if isinstance(c, PostItem)]
+        ei = 0
+        n_inserted = 0
+        for p in sorted_posts:
+            pid = p.get("id")
+            if isinstance(pid, int) and pid in self._loaded_ids:
+                continue
+            rpn = p.get("reply_to_post_number")
+            parent_user = None
+            if isinstance(rpn, int):
+                parent = by_number.get(rpn)
+                if parent:
+                    parent_user = parent.get("username")
+            raw = p.get("raw") or _strip_html(p.get("cooked", ""))
+            collapsed = len(raw.splitlines()) > _COLLAPSE_THRESHOLD
+            target_pn = p.get("post_number") or 0
+            while ei < len(existing_ordered):
+                cpn = existing_ordered[ei].post.get("post_number") or 0
+                if cpn > target_pn:
+                    break
+                ei += 1
+            item = PostItem(p, reply_to_username=parent_user, collapsed=collapsed)
+            try:
+                if ei < len(existing_ordered):
+                    posts_list.mount(item, before=existing_ordered[ei])
+                else:
+                    posts_list.append(item)
+            except Exception:  # noqa: BLE001
+                try:
+                    posts_list.append(item)
+                except Exception:  # noqa: BLE001
+                    continue
+            if isinstance(pid, int):
+                self._loaded_ids.add(pid)
+            existing_ordered.insert(ei, item)
+            ei += 1
+            n_inserted += 1
+        return n_inserted
 
     # --- actions ---
     def action_back(self) -> None:
@@ -439,7 +622,12 @@ class ThreadScreen(Screen):
     def action_open_in_editor(self) -> None:
         if not self._thread:
             return
-        content = _thread_markdown(self._thread)
+        posts_list = self.query_one("#posts", PostsList)
+        title = self._thread.get("title") or self._thread.get("fancy_title") or ""
+        all_posts = [item.post for item in posts_list.children if isinstance(item, PostItem)]
+        sep = "\n\n---\n\n"
+        body = sep.join(_post_markdown(p) for p in all_posts)
+        content = f"# {title}\n\n{body}"
         with self.app.suspend():
             edit_markdown(content, read_only=True)
         self.refresh()
@@ -741,9 +929,21 @@ class ThreadScreen(Screen):
     def _merge_new_posts(self, fresh: dict, *, notify: bool = True) -> None:
         """Merge a fresh thread response into the current list without scrolling.
 
-        Inserts new posts at their correct ``post_number`` position, updates
-        edited ones in place, removes deleted ones. Preserves cursor position.
+        Inserts new posts at their correct ``post_number`` position and updates
+        edited ones in place. Only removes a post if its id is absent from the
+        server's full stream (meaning it was truly deleted); posts that are
+        simply not in this partial response are left alone.
         """
+        # Full set of post_ids the server knows about (the whole stream).
+        fresh_stream_set: set[int] = set(
+            pid for pid in ((fresh.get("post_stream") or {}).get("stream") or [])
+            if isinstance(pid, int)
+        )
+        if fresh_stream_set:
+            self._stream = [
+                pid for pid in ((fresh.get("post_stream") or {}).get("stream") or [])
+                if isinstance(pid, int)
+            ]
         posts_list = self.query_one("#posts", PostsList)
         existing: dict[int, PostItem] = {}
         for item in posts_list.children:
@@ -792,8 +992,6 @@ class ThreadScreen(Screen):
                     p, reply_to_username=parent_user, collapsed=collapsed
                 )
                 to_insert.append((p.get("post_number") or 0, new_item))
-        # Insert new items in post_number order, using an ordered merge against
-        # the existing children snapshot. This keeps the list visually sorted.
         appended = 0
         if to_insert:
             to_insert.sort(key=lambda t: t[0])
@@ -817,14 +1015,19 @@ class ThreadScreen(Screen):
                         posts_list.append(new_item)
                     except Exception:  # noqa: BLE001
                         continue
+                pid_new = new_item.post.get("id")
+                if isinstance(pid_new, int):
+                    self._loaded_ids.add(pid_new)
                 appended += 1
         removed = 0
         for pid, item in list(existing.items()):
-            if pid not in fresh_ids:
+            # Only remove if the post is gone from the server stream entirely.
+            if pid not in fresh_ids and pid not in fresh_stream_set:
                 try:
                     item.remove()
                 except Exception:  # noqa: BLE001
                     continue
+                self._loaded_ids.discard(pid)
                 removed += 1
         self._thread = fresh
         if notify and (appended or updated or removed):
@@ -906,20 +1109,53 @@ class ThreadScreen(Screen):
         self.app.call_from_thread(self._refresh_after_reply)
 
     def _refresh_after_reply(self) -> None:
-        """After posting a reply: refresh in place, then jump to the new last post."""
-        posts_list = self.query_one("#posts", PostsList)
-        was_at_end = False
-        n = len(posts_list.children)
-        if n and isinstance(posts_list.index, int):
-            was_at_end = posts_list.index >= n - 1
-        self._refresh_in_place()
-        # Defer the jump so the fetched posts land before we move.
-        if was_at_end:
-            def _tail() -> None:
+        """After posting a reply: update stream, load the new post, jump to end."""
+        self._do_post_reply_refresh()
+
+    @work(thread=True, exclusive=True, group="post-reply-refresh")
+    def _do_post_reply_refresh(self) -> None:
+        try:
+            fresh = self.app.client.thread(self._topic_id)
+        except Exception:  # noqa: BLE001
+            return
+        # Get new stream so we can detect and fetch the reply we just posted.
+        new_stream = [
+            pid for pid in ((fresh.get("post_stream") or {}).get("stream") or [])
+            if isinstance(pid, int)
+        ]
+        extra_posts: list[dict] = []
+        if new_stream:
+            loaded_set = set(self._loaded_ids)
+            last_pos = -1
+            for i, pid in enumerate(new_stream):
+                if pid in loaded_set:
+                    last_pos = i
+            if last_pos < len(new_stream) - 1:
+                ids = [
+                    pid for pid in new_stream[last_pos + 1: last_pos + 21]
+                    if pid not in loaded_set
+                ]
+                if ids:
+                    try:
+                        extra_posts = self.app.client.thread_fill_missing(
+                            self._topic_id, ids
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
+        self.app.call_from_thread(self._apply_post_reply_refresh, fresh, extra_posts)
+
+    def _apply_post_reply_refresh(self, fresh: dict, extra_posts: list[dict]) -> None:
+        self._merge_new_posts(fresh, notify=False)
+        if extra_posts:
+            self._insert_posts(extra_posts)
+        def _tail() -> None:
+            try:
                 ps = self.query_one("#posts", PostsList)
                 if len(ps.children):
                     ps.index = len(ps.children) - 1
-            self.set_timer(1.5, _tail)
+            except Exception:  # noqa: BLE001
+                pass
+        self.call_after_refresh(_tail)
 
     # --- reactions ---
     def action_react(self) -> None:

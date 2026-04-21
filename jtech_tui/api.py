@@ -163,13 +163,15 @@ class Client:
         return ((d.get("topic_list") or {}).get("topics") or [])
 
     # --- threads / posts ---
-    def thread(self, tid: int) -> dict:
+    def thread(self, tid: int, near_post: int | None = None) -> dict:
         """Fetch the initial chunk of a thread.
 
-        Only posts around the user's last_read position are returned (what
-        Discourse returns natively). Call ``thread_fill_missing`` after display
-        to load the rest in the background.
+        Pass ``near_post`` to load the 20 posts centred around that post
+        number (Discourse returns them via ``/t/{id}/{post_number}.json``).
+        Omit or pass ``None`` / ``1`` to get the first 20 posts.
         """
+        if near_post and near_post > 1:
+            return self._get_json(f"/t/{tid}/{near_post}.json")
         return self._get_json(f"/t/{tid}.json")
 
     def thread_fill_missing(
@@ -322,6 +324,34 @@ class Client:
             return r.json()
         except ValueError:
             return {}
+
+    def mark_read(self, topic_id: int, post_numbers: list[int]) -> None:
+        """Mark post numbers as read via Discourse's timings endpoint.
+
+        Fire-and-forget — any exception is swallowed so this never blocks the UI.
+        """
+        if not post_numbers:
+            return
+        timings = {str(pn): 5000 for pn in post_numbers}
+        try:
+            csrf = self._csrf()
+            self.session.post(
+                self._url("/topics/timings"),
+                json={
+                    "topic_id": topic_id,
+                    "topic_time": min(len(post_numbers) * 5000, 60000),
+                    "timings": timings,
+                },
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Requested-With": "XMLHttpRequest",
+                    "X-CSRF-Token": csrf,
+                    "Accept": "application/json",
+                },
+                timeout=15,
+            )
+        except Exception:  # noqa: BLE001
+            pass
 
     def reply(
         self,
