@@ -448,8 +448,11 @@ class ThreadScreen(Screen):
         posts_list = self.query_one("#posts", PostsList)
         if posts_list.children and 0 <= start_idx < len(posts_list.children):
             posts_list.index = start_idx
-            posts_list.children[start_idx].scroll_visible()
         posts_list.focus()
+        # Markdown widgets measure themselves lazily; virtual_region.height is 0
+        # until after layout settles.  Retry each frame until it's ready.
+        if start_idx > 0:
+            self.call_after_refresh(self._do_initial_scroll, start_idx, 0)
         pns = [
             item.post.get("post_number")
             for item in posts_list.children
@@ -457,6 +460,20 @@ class ThreadScreen(Screen):
         ]
         if pns:
             self._track_read(pns)
+
+    def _do_initial_scroll(self, start_idx: int, attempts: int) -> None:
+        try:
+            posts_list = self.query_one("#posts", PostsList)
+        except Exception:  # noqa: BLE001
+            return
+        n = len(posts_list.children)
+        if not n or start_idx >= n:
+            return
+        item = posts_list.children[start_idx]
+        if item.virtual_region.height > 0:
+            item.scroll_visible(animate=False)
+        elif attempts < 20:
+            self.call_after_refresh(self._do_initial_scroll, start_idx, attempts + 1)
 
     @work(thread=True, exclusive=False, group="read-track")
     def _track_read(self, post_numbers: list[int]) -> None:
