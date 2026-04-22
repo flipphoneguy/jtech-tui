@@ -76,7 +76,7 @@ class LoginScreen(Screen):
         from .main import MainScreen  # avoid circular import
 
         app = self.app
-        app.cfg.session_cookie = cookie
         app.cfg.username = username
-        app.cfg.save()
+        # Persist the whole cookie jar, not just `_t`. Saves survive restarts.
+        app.save_session()
         app.switch_screen(MainScreen())

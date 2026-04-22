@@ -30,13 +30,27 @@ class JtechApp(App):
         self.cfg: Config = Config.load()
         if starting_feed:
             self.cfg.default_feed = starting_feed
-        self.client: Client = Client(self.cfg.forum_url, self.cfg.session_cookie)
+        self.client: Client = Client(
+            self.cfg.forum_url,
+            session_cookie=self.cfg.session_cookie,
+            cookies=self.cfg.cookies,
+        )
+
+    def _has_session(self) -> bool:
+        return bool(self.cfg.cookies) or bool(self.cfg.session_cookie)
 
     def on_mount(self) -> None:
-        if self.cfg.session_cookie:
+        if self._has_session():
             self.push_screen(MainScreen())
         else:
             self.push_screen(LoginScreen())
+
+    def save_session(self) -> None:
+        """Persist the current cookie jar so the session survives restarts."""
+        self.cfg.cookies = self.client.dump_cookies()
+        # Keep the legacy `_t` scalar in sync so older code paths still work.
+        self.cfg.session_cookie = self.client.session_cookie()
+        self.cfg.save()
 
     def reauth(self) -> None:
         # Called from worker threads via call_from_thread. We clear the cookie
@@ -46,6 +60,7 @@ class JtechApp(App):
         # forwards those callbacks to self.app.screen mid-transition and
         # raises ScreenStackError("No screens on stack").
         self.cfg.session_cookie = ""
+        self.cfg.cookies = []
         self.cfg.save()
         self.client = Client(self.cfg.forum_url, "")
         self.call_later(self._reauth_swap)

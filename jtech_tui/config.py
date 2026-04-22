@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
+from typing import Any
 
 DEFAULT_URL = "https://forums.jtechforums.org"
 
@@ -12,8 +13,13 @@ DEFAULT_URL = "https://forums.jtechforums.org"
 class Config:
     forum_url: str = DEFAULT_URL
     default_feed: str = "latest"
+    # Legacy: just the `_t` cookie value. Kept for migration from older configs.
     session_cookie: str = ""
     username: str = ""
+    # Full cookie jar dump: [{name, value, domain, path, expires, secure}, ...].
+    # Persisting the whole jar (not just `_t`) preserves _forum_session and any
+    # other cookies Discourse issues, so the saved session actually survives.
+    cookies: list[dict[str, Any]] = field(default_factory=list)
 
     @staticmethod
     def path() -> Path:

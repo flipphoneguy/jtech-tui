@@ -37,22 +37,70 @@ NOTIFICATION_TYPES = {
 
 
 class Client:
-    def __init__(self, base_url: str, session_cookie: str = "") -> None:
+    def __init__(
+        self,
+        base_url: str,
+        session_cookie: str = "",
+        cookies: list[dict] | None = None,
+    ) -> None:
         self.base_url = base_url.rstrip("/")
         self.session = requests.Session()
         self.session.headers["User-Agent"] = "jtech-tui/0.1 (+python-textual)"
         self._reactions_cache: list[str] | None = None
         self._has_reactions_plugin: bool | None = None
-        if session_cookie:
+        if cookies:
+            self.load_cookies(cookies)
+        elif session_cookie:
+            # Legacy config path: only `_t` was persisted. Set it host-scoped.
             host = urlparse(self.base_url).hostname or ""
-            self.session.cookies.set("_t", session_cookie, domain=host)
+            self.session.cookies.set("_t", session_cookie, domain=host, path="/")
         self._username: str | None = None
+
+    def dump_cookies(self) -> list[dict]:
+        """Serialize the session cookie jar for on-disk persistence.
+
+        Saves name/value/domain/path/expires/secure so a restored session
+        actually behaves like the one the server handed us — including
+        `_forum_session` and any other cookies Discourse issues, not just
+        `_t`.
+        """
+        out: list[dict] = []
+        for c in self.session.cookies:
+            out.append({
+                "name": c.name,
+                "value": c.value,
+                "domain": c.domain,
+                "path": c.path or "/",
+                "expires": c.expires,
+                "secure": bool(c.secure),
+            })
+        return out
+
+    def load_cookies(self, cookies: list[dict]) -> None:
+        """Restore cookies previously produced by dump_cookies()."""
+        for c in cookies:
+            name = c.get("name")
+            value = c.get("value")
+            if not name or value is None:
+                continue
+            kwargs: dict = {
+                "domain": c.get("domain") or "",
+                "path": c.get("path") or "/",
+            }
+            if c.get("expires") is not None:
+                kwargs["expires"] = c["expires"]
+            if c.get("secure"):
+                kwargs["secure"] = True
+            self.session.cookies.set(name, value, **kwargs)
 
     def _url(self, path: str) -> str:
         return self.base_url + path
 
     def _check(self, r: requests.Response) -> None:
-        if r.status_code in (401, 403):
+        # Only 401 means "your session is not valid" — 403 is an authorization
+        # decision on a valid session (e.g. staff-only endpoint, category
+        # permissions) and must NOT trigger a reauth logout.
+        if r.status_code == 401:
             raise Unauthorized()
         if r.status_code >= 400:
             try:
