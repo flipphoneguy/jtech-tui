@@ -180,7 +180,17 @@ class MainScreen(Screen):
         Binding("ctrl+right", "next_tab", "Next tab", show=False),
         Binding("ctrl+left", "prev_tab", "Prev tab", show=False),
         Binding("down", "tabs_down", "", show=False),
+        # Jump directly to a tab by number. 1=Latest … 8=Search.
+        *[
+            Binding(str(i + 1), f"goto_tab({i})", "", show=False)
+            for i in range(len(TAB_ORDER))
+        ],
     ]
+
+    def action_goto_tab(self, index: int) -> None:
+        if 0 <= index < len(TAB_ORDER):
+            tabs = self.query_one("#tabs", TabbedContent)
+            tabs.active = TAB_ORDER[index]
 
     def __init__(self) -> None:
         super().__init__()

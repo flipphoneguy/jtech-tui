@@ -18,7 +18,7 @@ class JtechApp(App):
 
     BINDINGS = [
         Binding("ctrl+q", "quit", "Quit", priority=True),
-        Binding("?", "show_bindings_help", "Help", show=False),
+        Binding("?", "show_bindings_help", "Help"),
     ]
 
     def action_show_bindings_help(self) -> None:
