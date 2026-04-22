@@ -13,10 +13,13 @@ from textual.widgets.option_list import Option
 # Common Discourse reactions. The server decides which are accepted; unsupported
 # ones will surface as an error in the notification.
 REACTIONS: list[tuple[str, str, str]] = [
-    ("heart", "❤️", "Heart"),
+    ("ok_hand", "👌", "OK"),
+    ("man_shrugging", "🤷", "Shrug"),
     ("+1", "👍", "Like"),
-    ("-1", "👎", "Dislike"),
+    ("folded_hands", "🙏", "Thanks"),
     ("laughing", "😆", "Laughing"),
+    ("heart", "❤️", "Heart"),
+    ("-1", "👎", "Dislike"),
     ("open_mouth", "😮", "Wow"),
     ("cry", "😢", "Sad"),
     ("clap", "👏", "Clap"),

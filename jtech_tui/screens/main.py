@@ -181,6 +181,8 @@ class MainScreen(Screen):
         Binding("ctrl+right", "next_tab", "Next tab", show=False),
         Binding("ctrl+left", "prev_tab", "Prev tab", show=False),
         Binding("down", "tabs_down", "", show=False),
+        Binding("n", "next_unread", "Next unread", show=False),
+        Binding("p", "prev_unread", "Prev unread", show=False),
     ]
 
     def __init__(self) -> None:
@@ -188,13 +190,13 @@ class MainScreen(Screen):
         self._topic_cache: dict[str, dict] = {}
         self._categories_cache: list[dict] = []
         self._notifications_cache: list[dict] = []
-        # Source data per view, cached so we can re-render on resize.
         self._view_data: dict[str, list] = {}
-        # Feed pagination state: page index and "has more" flag.
         self._feed_page: dict[str, int] = {}
         self._feed_has_more: dict[str, bool] = {}
         self._feed_loading_more: set[str] = set()
         self._did_initial_load = False
+        self._thread_prefetch: dict[int, dict] = {}
+        self._prefetch_timer = None
 
     def on_screen_resume(self) -> None:
         # First resume coincides with on_mount, which already triggers a load.
@@ -288,6 +290,73 @@ class MainScreen(Screen):
                 self._populate_notifications(data)
             elif key == "search":
                 self._populate_search(data)
+
+    # --- prefetch on hover ---
+    @on(DataTable.RowHighlighted)
+    def _row_highlighted(self, event: DataTable.RowHighlighted) -> None:
+        table = event.data_table
+        if not (table.id and table.id.startswith("tbl-") and table.id[4:] in FEEDS):
+            return
+        key_obj = event.row_key
+        key = key_obj.value if hasattr(key_obj, "value") else str(key_obj or "")
+        if not key or not key.startswith("topic:"):
+            return
+        topic = self._topic_cache.get(key)
+        if not topic:
+            return
+        tid = topic.get("id")
+        if not tid or tid in self._thread_prefetch:
+            return
+        if self._prefetch_timer is not None:
+            self._prefetch_timer.stop()
+        self._prefetch_timer = self.set_timer(
+            0.3, lambda: self._do_prefetch(int(tid), topic)
+        )
+
+    @work(thread=True, exclusive=False, group="prefetch-thread")
+    def _do_prefetch(self, tid: int, topic: dict) -> None:
+        if tid in self._thread_prefetch:
+            return
+        try:
+            last_read = topic.get("last_read_post_number")
+            near_post = last_read if isinstance(last_read, int) and last_read > 1 else None
+            data = self.app.client.thread(tid, near_post=near_post)
+        except Exception:  # noqa: BLE001
+            return
+        self.app.call_from_thread(self._store_prefetch, tid, data)
+
+    def _store_prefetch(self, tid: int, data: dict) -> None:
+        self._thread_prefetch[tid] = data
+        # Keep cache from growing unbounded.
+        if len(self._thread_prefetch) > 10:
+            self._thread_prefetch.pop(next(iter(self._thread_prefetch)))
+
+    # --- n/p next/prev unread ---
+    def _unread_jump(self, direction: int) -> None:
+        tab_id = self._current_tab_id()
+        if not tab_id.startswith("tab-"):
+            return
+        name = tab_id[4:]
+        key = f"feed:{name}" if name in FEEDS else name
+        topics = self._view_data.get(key)
+        if not topics:
+            return
+        try:
+            t = self.query_one(f"#tbl-{name}", DataTable)
+        except Exception:  # noqa: BLE001
+            return
+        cur = t.cursor_row
+        indices = range(cur + 1, len(topics)) if direction > 0 else range(cur - 1, -1, -1)
+        for i in indices:
+            if _topic_state(topics[i]) in ("new", "unread"):
+                t.move_cursor(row=i)
+                return
+
+    def action_next_unread(self) -> None:
+        self._unread_jump(1)
+
+    def action_prev_unread(self) -> None:
+        self._unread_jump(-1)
 
     # --- tab navigation ---
     @on(TabbedContent.TabActivated)
@@ -558,14 +627,16 @@ class MainScreen(Screen):
         self._update_notif_badge()
 
     def _update_notif_badge(self) -> None:
-        has_unread = any(not n.get("read") for n in self._notifications_cache)
+        count = sum(1 for n in self._notifications_cache if not n.get("read"))
         try:
             from textual.widgets._tabbed_content import ContentTab
             tab = self.query_one("#--content-tab-tab-notifications", ContentTab)
-            tab.label = (
-                Text.assemble("Notifications ", ("●", "bold yellow"))
-                if has_unread else "Notifications"
-            )
+            if count > 0:
+                tab.label = Text.assemble(
+                    "Notifications ", ("●", "bold yellow"), f" {count}"
+                )
+            else:
+                tab.label = "Notifications"
         except Exception:  # noqa: BLE001
             pass
 
@@ -630,7 +701,9 @@ class MainScreen(Screen):
         if key.startswith("topic:"):
             topic = self._topic_cache.get(key)
             if topic:
-                self.app.push_screen(ThreadScreen(topic))
+                tid = topic.get("id")
+                prefetched = self._thread_prefetch.pop(int(tid), None) if tid else None
+                self.app.push_screen(ThreadScreen(topic, prefetched_data=prefetched))
         elif key.startswith("cat:"):
             cat = self._topic_cache.get(key)
             if cat:

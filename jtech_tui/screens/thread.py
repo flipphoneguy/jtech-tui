@@ -57,6 +57,9 @@ def _strip_html(s: str) -> str:
 
 
 _REACTION_EMOJI = {
+    "ok_hand": "👌",
+    "man_shrugging": "🤷",
+    "folded_hands": "🙏",
     "heart": "❤️",
     "+1": "👍",
     "-1": "👎",
@@ -268,6 +271,26 @@ class PostsList(ListView):
             self.posts_list = posts_list
             self.direction = direction  # "above" | "below"
 
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._suppress_index_scroll = False
+
+    def watch_index(self, old_index: int | None, new_index: int | None) -> None:
+        """Override to allow suppressing the auto-scroll when prepending posts."""
+        if self._suppress_index_scroll:
+            if old_index is not None:
+                try:
+                    self._nodes[old_index].highlighted = False
+                except IndexError:
+                    pass
+            if new_index is not None:
+                try:
+                    self._nodes[new_index].highlighted = True
+                except IndexError:
+                    pass
+        else:
+            super().watch_index(old_index, new_index)
+
     BINDINGS = [
         Binding("j", "cursor_down", "Down", show=False),
         Binding("k", "cursor_up", "Up", show=False),
@@ -337,6 +360,7 @@ class ThreadScreen(Screen):
         Binding("e", "open_in_editor", "Editor"),
         Binding("+", "react", "React"),
         Binding("ctrl+r", "react", "React", show=False),
+        Binding("o", "open_url", "Browser"),
         Binding("R", "reload", "Reload"),
         Binding("p", "jump_to_parent", "Jump→reply"),
         Binding("l", "show_reactors", "Reactors"),
@@ -346,16 +370,18 @@ class ThreadScreen(Screen):
         Binding("G", "goto_bottom", "Bottom"),
     ]
 
-    def __init__(self, topic: dict) -> None:
+    def __init__(self, topic: dict, prefetched_data: dict | None = None) -> None:
         super().__init__()
         self._topic = topic
         self._topic_id = int(topic.get("id", 0))
         self._thread: dict | None = None
         self._auto_refresh = None  # Timer handle
-        self._stream: list[int] = []       # all post_ids in order (from server)
-        self._loaded_ids: set[int] = set() # post_ids currently in the list widget
+        self._stream: list[int] = []
+        self._loaded_ids: set[int] = set()
         self._loading_above = False
         self._loading_below = False
+        self._prefetched_data = prefetched_data
+        self._prefetch_below: list[dict] | None = None
 
     def on_unmount(self) -> None:
         if self._auto_refresh is not None:
@@ -372,6 +398,7 @@ class ThreadScreen(Screen):
     def on_mount(self) -> None:
         self.query_one("#posts", PostsList).display = False
         self._load()
+        self._auto_refresh = self.set_interval(30.0, self._poll_new_posts)
 
     def _load(self) -> None:
         self.query_one("#loader", LoadingIndicator).display = True
@@ -380,7 +407,12 @@ class ThreadScreen(Screen):
 
     @work(thread=True, exclusive=True, group="thread")
     def _fetch(self) -> None:
-        # Open the thread near the last-read post so we land in the right place.
+        # Use prefetched data if available (from hovering on the feed row).
+        if self._prefetched_data:
+            data = self._prefetched_data
+            self._prefetched_data = None
+            self.app.call_from_thread(self._display_thread, data)
+            return
         last_read = self._topic.get("last_read_post_number")
         near_post = last_read if isinstance(last_read, int) and last_read > 1 else None
         try:
@@ -398,7 +430,6 @@ class ThreadScreen(Screen):
 
     def _display_thread(self, thread: dict) -> None:
         self._thread = thread
-        # Record the full ordered list of post_ids so we can lazy-load chunks.
         self._stream = [
             pid for pid in ((thread.get("post_stream") or {}).get("stream") or [])
             if isinstance(pid, int)
@@ -409,28 +440,12 @@ class ThreadScreen(Screen):
         posts_list.display = True
         posts_list.clear()
         posts = ((thread.get("post_stream") or {}).get("posts") or [])
-        by_number: dict[int, dict] = {}
-        for p in posts:
-            pn = p.get("post_number")
-            if isinstance(pn, int):
-                by_number[pn] = p
-        for p in posts:
-            rpn = p.get("reply_to_post_number")
-            parent_user = None
-            if isinstance(rpn, int):
-                parent = by_number.get(rpn)
-                if parent:
-                    parent_user = parent.get("username")
-            raw = p.get("raw") or _strip_html(p.get("cooked", ""))
-            long_post = len(raw.splitlines()) > _COLLAPSE_THRESHOLD
-            item = PostItem(p, reply_to_username=parent_user, collapsed=long_post)
-            posts_list.append(item)
-            pid = p.get("id")
-            if isinstance(pid, int):
-                self._loaded_ids.add(pid)
-        # Resume behavior: open at first unread if there's unread content,
-        # otherwise at the last post we've seen, mirroring Discourse web.
-        # Never-opened threads (last_read == 0/None) start at the top.
+        by_number: dict[int, dict] = {
+            p["post_number"]: p for p in posts if isinstance(p.get("post_number"), int)
+        }
+        # Compute start_idx first so we only mount posts from the target onwards.
+        # This means position 0 of the list IS the target post — no scroll needed.
+        # Posts before the target are not in _loaded_ids and will lazy-load on k.
         start_idx = 0
         last_read = thread.get("last_read_post_number") or self._topic.get(
             "last_read_post_number"
@@ -446,8 +461,22 @@ class ThreadScreen(Screen):
                 if p.get("post_number") == target_pn:
                     start_idx = i
                     break
-        if posts:
-            self.call_after_refresh(self._finish_initial_load, start_idx)
+        for p in posts[start_idx:]:
+            rpn = p.get("reply_to_post_number")
+            parent_user = None
+            if isinstance(rpn, int):
+                parent = by_number.get(rpn)
+                if parent:
+                    parent_user = parent.get("username")
+            raw = p.get("raw") or _strip_html(p.get("cooked", ""))
+            long_post = len(raw.splitlines()) > _COLLAPSE_THRESHOLD
+            item = PostItem(p, reply_to_username=parent_user, collapsed=long_post)
+            posts_list.append(item)
+            pid = p.get("id")
+            if isinstance(pid, int):
+                self._loaded_ids.add(pid)
+        if posts[start_idx:]:
+            self.call_after_refresh(self._finish_initial_load, 0)
 
     def _finish_initial_load(self, start_idx: int) -> None:
         posts_list = self.query_one("#posts", PostsList)
@@ -465,6 +494,10 @@ class ThreadScreen(Screen):
         ]
         if pns:
             self._track_read(pns)
+        # Immediately background-load posts above the opening position.
+        if self._ids_to_load_above() and not self._loading_above:
+            self._loading_above = True
+            self._load_more_above()
 
     def _do_initial_scroll(self, start_idx: int, attempts: int) -> None:
         try:
@@ -520,7 +553,11 @@ class ThreadScreen(Screen):
         if event.direction == "below":
             if not self._loading_below and self._ids_to_load_below():
                 self._loading_below = True
-                self._load_more_below()
+                if self._prefetch_below:
+                    posts, self._prefetch_below = self._prefetch_below, None
+                    self._append_posts_below(posts)
+                else:
+                    self._load_more_below()
         elif event.direction == "above":
             if not self._loading_above and self._ids_to_load_above():
                 self._loading_above = True
@@ -548,6 +585,22 @@ class ThreadScreen(Screen):
         pns = [p.get("post_number") for p in posts if isinstance(p.get("post_number"), int)]
         if pns:
             self._track_read(pns)
+        # Prefetch next chunk in background so scrolling to the edge is instant.
+        next_ids = self._ids_to_load_below()
+        if next_ids and not self._prefetch_below:
+            self._prefetch_next_below(next_ids)
+
+    @work(thread=True, exclusive=False, group="prefetch-below")
+    def _prefetch_next_below(self, ids: list[int]) -> None:
+        try:
+            posts = self.app.client.thread_fill_missing(self._topic_id, ids)
+        except Exception:  # noqa: BLE001
+            return
+        if posts:
+            self.app.call_from_thread(self._store_prefetch_below, posts)
+
+    def _store_prefetch_below(self, posts: list[dict]) -> None:
+        self._prefetch_below = posts
 
     @work(thread=True, exclusive=True, group="thread-above")
     def _load_more_above(self) -> None:
@@ -569,13 +622,39 @@ class ThreadScreen(Screen):
         posts_list = self.query_one("#posts", PostsList)
         saved_idx = posts_list.index
         n_inserted = self._insert_posts(posts)
-        # All inserted posts are above the previous first item, so shift the cursor.
-        if isinstance(saved_idx, int) and n_inserted > 0:
-            posts_list.index = saved_idx + n_inserted
         self._loading_above = False
         pns = [p.get("post_number") for p in posts if isinstance(p.get("post_number"), int)]
         if pns:
             self._track_read(pns)
+        if isinstance(saved_idx, int) and n_inserted > 0:
+            new_idx = saved_idx + n_inserted
+            # Suppress watch_index scroll — new items have no height yet, so
+            # scroll_to_widget would jump to 0. We pin to the target in the loop.
+            posts_list._suppress_index_scroll = True
+            posts_list.index = new_idx
+            posts_list._suppress_index_scroll = False
+            self._restore_scroll_after_prepend(new_idx, 0)
+
+    def _restore_scroll_after_prepend(self, idx: int, attempts: int) -> None:
+        try:
+            posts_list = self.query_one("#posts", PostsList)
+        except Exception:  # noqa: BLE001
+            return
+        if idx >= len(posts_list.children):
+            return
+        # Markdown above renders over many frames, continually shifting the
+        # target's virtual_region downward. Pin target to the top of the viewport
+        # on every timer tick so the viewport follows those shifts visually.
+        # set_timer is used (not call_after_refresh) because it fires reliably
+        # even when no widget changes trigger a refresh.
+        item = posts_list.children[idx]
+        if item.virtual_region.height > 0:
+            posts_list.scroll_to_widget(item, animate=False, top=True)
+        if attempts < 90:
+            self.set_timer(
+                0.020,
+                lambda: self._restore_scroll_after_prepend(idx, attempts + 1),
+            )
 
     def _insert_posts(self, posts: list[dict]) -> int:
         """Insert posts into the list at correct post_number positions.
@@ -812,18 +891,13 @@ class ThreadScreen(Screen):
 
     @work(thread=True, exclusive=True, group="reactors")
     def _fetch_reactors(self, post_id: int, post: dict) -> None:
-        groups: list[tuple[str, list[str]]] = []
-        for r in post.get("reactions") or []:
-            rid = r.get("id") or ""
-            if not rid:
-                continue
-            users = self.app.client.reaction_users(post_id, rid)
-            groups.append((rid, users))
+        groups = self.app.client.all_reaction_users(post_id)
         if not groups:
             for a in post.get("actions_summary") or []:
                 if a.get("id") == 2 and a.get("count"):
                     users = self.app.client.post_action_users(post_id, 2)
-                    groups.append(("+1", users))
+                    if users:
+                        groups.append(("+1", users))
                     break
         self.app.call_from_thread(self._open_reactors_modal, groups)
 
@@ -994,6 +1068,23 @@ class ThreadScreen(Screen):
         self.app.call_from_thread(self.app.notify, "Post deleted.", severity="information")
         self.app.call_from_thread(self._refresh_in_place)
 
+    def action_open_url(self) -> None:
+        post = self._highlighted_post()
+        base = (self.app.client.base_url or "").rstrip("/")
+        slug = (self._thread or {}).get("slug") or self._topic.get("slug") or ""
+        tid = self._topic_id
+        pn = post.get("post_number") or 1 if post else 1
+        url = f"{base}/t/{slug}/{tid}/{pn}" if slug else f"{base}/t/{tid}/{pn}"
+        for cmd in (["termux-open-url", url], ["xdg-open", url], ["open", url]):
+            if shutil.which(cmd[0]):
+                try:
+                    subprocess.Popen(cmd)
+                    return
+                except Exception:  # noqa: BLE001
+                    continue
+        import webbrowser
+        webbrowser.open(url)
+
     def action_toggle_auto_refresh(self) -> None:
         if self._auto_refresh is not None:
             self._auto_refresh.stop()
@@ -1003,10 +1094,26 @@ class ThreadScreen(Screen):
         self._auto_refresh = self.set_interval(30.0, self._poll_new_posts)
         self.app.notify("Auto-refresh on (30s).", severity="information")
 
-    @work(thread=True, exclusive=True, group="poll")
     def _poll_new_posts(self) -> None:
+        # Compute near_post on the main thread so the worker can target the tail
+        # of our loaded range — otherwise thread() returns the first chunk and
+        # the merge logic sees those as "new" posts to insert.
+        max_pn = 0
         try:
-            fresh = self.app.client.thread(self._topic_id)
+            posts_list = self.query_one("#posts", PostsList)
+            for item in posts_list.children:
+                if isinstance(item, PostItem):
+                    pn = item.post.get("post_number")
+                    if isinstance(pn, int) and pn > max_pn:
+                        max_pn = pn
+        except Exception:  # noqa: BLE001
+            pass
+        self._poll_new_posts_worker(max_pn if max_pn > 1 else None)
+
+    @work(thread=True, exclusive=True, group="poll")
+    def _poll_new_posts_worker(self, near_post: int | None) -> None:
+        try:
+            fresh = self.app.client.thread(self._topic_id, near_post=near_post)
         except Exception:  # noqa: BLE001
             return
         self.app.call_from_thread(self._merge_new_posts, fresh)
@@ -1031,11 +1138,15 @@ class ThreadScreen(Screen):
             ]
         posts_list = self.query_one("#posts", PostsList)
         existing: dict[int, PostItem] = {}
+        max_pn_loaded = 0
         for item in posts_list.children:
             if isinstance(item, PostItem):
                 pid = item.post.get("id")
                 if isinstance(pid, int):
                     existing[pid] = item
+                pn = item.post.get("post_number")
+                if isinstance(pn, int) and pn > max_pn_loaded:
+                    max_pn_loaded = pn
         fresh_posts = ((fresh.get("post_stream") or {}).get("posts") or [])
         by_number: dict[int, dict] = {}
         for p in fresh_posts:
@@ -1071,12 +1182,19 @@ class ThreadScreen(Screen):
                     item.post = p
                     item.reply_to_username = parent_user
             else:
+                pn = p.get("post_number")
+                # Only insert posts that come after the current tail. Otherwise a
+                # refresh that returns a different chunk (e.g., the top of the
+                # thread) would spuriously insert old posts the user hasn't
+                # scrolled to yet.
+                if not isinstance(pn, int) or pn <= max_pn_loaded:
+                    continue
                 raw = p.get("raw") or _strip_html(p.get("cooked", ""))
                 collapsed = len(raw.splitlines()) > _COLLAPSE_THRESHOLD
                 new_item = PostItem(
                     p, reply_to_username=parent_user, collapsed=collapsed
                 )
-                to_insert.append((p.get("post_number") or 0, new_item))
+                to_insert.append((pn, new_item))
         appended = 0
         if to_insert:
             to_insert.sort(key=lambda t: t[0])
@@ -1243,6 +1361,8 @@ class ThreadScreen(Screen):
         self.call_after_refresh(_tail)
 
     # --- reactions ---
+    _FORUM_REACTIONS = ["ok_hand", "man_shrugging", "+1", "folded_hands", "laughing"]
+
     def action_react(self) -> None:
         post_id = self._highlighted_post_id()
         if not post_id:
@@ -1250,13 +1370,8 @@ class ThreadScreen(Screen):
             return
         self._open_react_modal(post_id)
 
-    @work(thread=True, exclusive=True, group="react-opts")
     def _open_react_modal(self, post_id: int) -> None:
-        try:
-            supported = self.app.client.supported_reactions()
-        except Exception:  # noqa: BLE001
-            supported = []
-        self.app.call_from_thread(self._show_react_modal, post_id, supported)
+        self._show_react_modal(post_id, self._FORUM_REACTIONS)
 
     def _show_react_modal(self, post_id: int, supported: list[str]) -> None:
         def _done(reaction: str | None) -> None:

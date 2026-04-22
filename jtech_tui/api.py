@@ -302,6 +302,23 @@ class Client:
         users = d.get("reaction_users") or d.get("users") or []
         return [u.get("username") for u in users if u.get("username")]
 
+    def all_reaction_users(self, post_id: int) -> list[tuple[str, list[str]]]:
+        """Return all reactions and their users in one call (reactions plugin)."""
+        try:
+            d = self._get_json(
+                f"/discourse-reactions/posts/{post_id}/reactions-users.json"
+            )
+        except Exception:  # noqa: BLE001
+            return []
+        groups: list[tuple[str, list[str]]] = []
+        for item in d.get("reaction_users") or []:
+            rid = item.get("id") or ""
+            if not rid:
+                continue
+            users = [u.get("username") for u in (item.get("users") or []) if u.get("username")]
+            groups.append((rid, users))
+        return groups
+
     # --- uploads ---
     def upload(self, file_path: str, upload_type: str = "composer") -> dict:
         csrf = self._csrf()
@@ -518,23 +535,11 @@ class Client:
         return {}
 
     def toggle_reaction(self, post_id: int, reaction_id: str) -> dict:
-        """Toggle a reaction on a post.
+        """Toggle a reaction on a post via the Discourse Reactions plugin.
 
-        Uses the Discourse Reactions plugin endpoint when available. For
-        like-ish ids (+1/heart/like/thumbsup) always uses the core
-        /post_actions endpoint — it's universal and was confirmed to work.
+        PUT /discourse-reactions/posts/{id}/custom-reactions/{emoji}/toggle.json
+        handles every reaction id including `+1`.
         """
-        if reaction_id in self._LIKE_IDS:
-            return self._toggle_core_like(post_id)
-
-        if self._has_reactions_plugin is None:
-            self.supported_reactions()
-        if not self._has_reactions_plugin:
-            # Plugin not installed; we can't apply a custom reaction.
-            raise RuntimeError(
-                f"Reaction '{reaction_id}' not available — Reactions plugin not detected."
-            )
-
         csrf = self._csrf()
         headers = {
             "X-CSRF-Token": csrf,
