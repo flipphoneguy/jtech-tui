@@ -15,6 +15,7 @@ from textual.widgets import (
     DataTable,
     Header,
     Input,
+    Tab,
     TabbedContent,
     TabPane,
     Tabs,
@@ -245,6 +246,8 @@ class MainScreen(Screen):
         except Exception:  # noqa: BLE001
             pass
         self._load_for_tab(tabs.active)
+        if tabs.active != "tab-notifications":
+            self._load_notifications()
         self.call_after_refresh(self._focus_active_table)
 
     def _focus_active_table(self) -> None:
@@ -321,6 +324,8 @@ class MainScreen(Screen):
 
     def action_reload(self) -> None:
         self._load_for_tab(self._current_tab_id())
+        if self._current_tab_id() != "tab-notifications":
+            self._load_notifications()
 
     def _load_for_tab(self, tab_id: str) -> None:
         if not tab_id:
@@ -339,7 +344,7 @@ class MainScreen(Screen):
         elif tab_id == "tab-notifications":
             self._load_notifications()
         elif tab_id == "tab-search":
-            self.query_one("#search-input", Input).focus()
+            pass
 
     # --- feeds ---
     @work(thread=True, exclusive=True, group="feed")
@@ -550,6 +555,20 @@ class MainScreen(Screen):
                 key=key,
             )
         self._restore_cursor(t, prev)
+        self._update_notif_badge()
+
+    def _update_notif_badge(self) -> None:
+        has_unread = any(not n.get("read") for n in self._notifications_cache)
+        try:
+            for tab in self.query_one(Tabs).query(Tab):
+                if tab.id == "tab-notifications":
+                    if has_unread:
+                        tab.label = Text.assemble("Notifications ", ("●", "bold yellow"))
+                    else:
+                        tab.label = "Notifications"
+                    break
+        except Exception:  # noqa: BLE001
+            pass
 
     # --- search ---
     def on_input_submitted(self, event: Input.Submitted) -> None:
