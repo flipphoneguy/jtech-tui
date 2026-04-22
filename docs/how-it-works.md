@@ -96,8 +96,16 @@ Fix (in `app.py`): keep step 1 synchronous (cookie wipe is safe to do right
 away and prevents further bad requests), but defer the screen swap with
 `self.call_later`. By the time the callback runs, the outgoing screen's
 pending messages have drained, and the swap becomes atomic from the message
-pump's perspective. The swap itself also guards against the "already on
-LoginScreen" and "empty stack" edge cases:
+pump's perspective.
+
+The swap itself has a second subtlety: Textual keeps an internal
+`Screen(id="_default")` at the bottom of every app's stack. That screen was
+never installed via `push_screen(..., callback=...)`, so its
+`_result_callbacks` list is empty. `switch_screen` unconditionally calls
+`_pop_result_callback()` on the outgoing top — which blows up with
+`IndexError: pop from empty list` if the outgoing top is `_default`. So the
+swap pops user-pushed screens down to `_default` (never including it) and
+then `push_screen(LoginScreen())` on top of it:
 
 ```python
 def reauth(self) -> None:
@@ -109,12 +117,12 @@ def reauth(self) -> None:
 def _reauth_swap(self) -> None:
     if self.screen_stack and isinstance(self.screen, LoginScreen):
         return
-    while len(self.screen_stack) > 1:
+    while self.screen_stack:
+        top = self.screen_stack[-1]
+        if getattr(top, "id", None) == "_default":
+            break
         self.pop_screen()
-    if self.screen_stack:
-        self.switch_screen(LoginScreen())
-    else:
-        self.push_screen(LoginScreen())
+    self.push_screen(LoginScreen())
     self.notify("Session expired — please sign in again.", severity="warning")
 ```
 
@@ -189,6 +197,11 @@ it's only called after login and on explicit user actions.
 - **`switch_screen` is not atomic vs. the message pump.** Use
   `call_later` around transitions that follow an external event (like the
   reauth flow) so queued messages drain first.
+- **Never `switch_screen` off `Screen(id="_default")`.** Textual installs
+  that screen at the bottom of the stack without a result callback, and
+  `switch_screen` will raise `IndexError: pop from empty list` trying to
+  invoke one. Pop user screens down to `_default` and `push_screen` on top
+  of it instead.
 - **Re-render on resize.** Tables cache their source data in
   `MainScreen._view_data` so column truncation can adapt when the terminal
   changes size without a re-fetch.

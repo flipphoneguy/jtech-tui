@@ -51,14 +51,19 @@ class JtechApp(App):
         self.call_later(self._reauth_swap)
 
     def _reauth_swap(self) -> None:
+        # Already on LoginScreen — nothing to do.
         if self.screen_stack and isinstance(self.screen, LoginScreen):
             return
-        while len(self.screen_stack) > 1:
+        # Pop user-pushed screens. Textual keeps an internal `_default`
+        # screen at the bottom of the stack; never switch_screen off it —
+        # it has no result callback and switch_screen will
+        # `IndexError: pop from empty list` trying to invoke one.
+        while self.screen_stack:
+            top = self.screen_stack[-1]
+            if getattr(top, "id", None) == "_default":
+                break
             self.pop_screen()
-        if self.screen_stack:
-            self.switch_screen(LoginScreen())
-        else:
-            self.push_screen(LoginScreen())
+        self.push_screen(LoginScreen())
         self.notify("Session expired — please sign in again.", severity="warning")
 
 
