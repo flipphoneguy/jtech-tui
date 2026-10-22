@@ -7,12 +7,13 @@ from .base import (
     RateLimited,
     Unauthorized,
 )
+from .mod import ModMixin
 from .posts import PostsMixin
 from .topics import TopicsMixin
 from .users import UsersMixin
 
 
-class Client(TopicsMixin, PostsMixin, UsersMixin):
+class Client(TopicsMixin, PostsMixin, UsersMixin, ModMixin):
     """Discourse client for jtech forums. Every method is blocking; call from workers."""
 
 

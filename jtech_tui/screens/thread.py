@@ -505,6 +505,9 @@ class ThreadScreen(Screen):
         e = self._current()
         if e is None or e.is_small:
             return
+        if e.post.get("yours"):
+            self.app.notify("You can't react to your own post.", severity="warning")
+            return
         mine = e.post.get("current_user_reaction") or {}
         mine_id = mine.get("id") if isinstance(mine, dict) else None
         site = self.app.site
