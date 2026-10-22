@@ -54,9 +54,7 @@ def _error_message(r: requests.Response) -> tuple[str, str]:
 class BaseClient:
     """HTTP core shared by every endpoint mixin.
 
-    Thread-safe enough for Textual workers: requests.Session is shared, the
-    CSRF token is cached behind a lock, and cookie rotation is reported through
-    ``on_cookie_change`` so the caller can persist the newest ``_t``.
+    Thread-safe enough for Textual workers: requests.Session is shared, the CSRF token is cached behind a lock, and cookie rotation is reported through ``on_cookie_change`` so the caller can persist the newest ``_t``.
     """
 
     def __init__(

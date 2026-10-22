@@ -9,7 +9,7 @@ from textual.widgets import Header, LoadingIndicator, Markdown
 
 from .smart_footer import SmartFooter
 
-from ..api import Unauthorized
+from ..api import ApiError
 
 
 def _fmt_when(s: str) -> str:
@@ -52,18 +52,13 @@ class UserProfileScreen(Screen):
     @work(thread=True, exclusive=True, group="profile")
     def _fetch(self) -> None:
         try:
-            data = self.app.client.user_profile(self._username)
-        except Unauthorized:
-            self.app.call_from_thread(self.app.reauth)
-            return
-        except Exception as e:  # noqa: BLE001
-            self.app.call_from_thread(
-                self.app.notify, f"Load failed: {e}", severity="error"
-            )
+            data = self.app.client.user(self._username)
+        except ApiError as e:
+            self.app.call_from_thread(self.app.report_error, e, "Load")
             return
         try:
             actions = self.app.client.user_actions(self._username)
-        except Exception:  # noqa: BLE001
+        except ApiError:
             actions = []
         self.app.call_from_thread(self._display, data, actions)
 

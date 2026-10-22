@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Any
+import time
 
 from rich.text import Text
 from textual import events, on, work
@@ -23,7 +22,9 @@ from textual.widgets import (
 
 from .smart_footer import SmartFooter
 
-from ..api import NOTIFICATION_TYPES, Unauthorized
+from ..util import time_ago as _pretty_time, truncate as _truncate
+
+from ..api import ApiError
 from ..editor import edit_markdown
 from .composer import (
     CategoryPickerModal,
@@ -33,7 +34,7 @@ from .composer import (
     SearchModal,
 )
 from .leaderboard import LeaderboardScreen
-from .thread import ThreadScreen, _copy_to_clipboard
+from .thread import ThreadScreen, upload_and_copy
 
 
 FEEDS = ("latest", "new", "top", "unseen")
@@ -44,41 +45,6 @@ TAB_ORDER = (
     "tab-notifications",
     "tab-search",
 )
-
-
-def _pretty_time(s: str) -> str:
-    if not s:
-        return ""
-    try:
-        t = datetime.fromisoformat(s.replace("Z", "+00:00"))
-    except ValueError:
-        return s
-    now = datetime.now(timezone.utc)
-    secs = int((now - t).total_seconds())
-    if secs < 60:
-        return "now"
-    if secs < 3600:
-        return f"{secs // 60}m"
-    if secs < 86400:
-        return f"{secs // 3600}h"
-    days = secs // 86400
-    if days < 7:
-        return f"{days}d"
-    if days < 30:
-        return f"{days // 7}w"
-    if days < 365:
-        return f"{days // 30}mo"
-    return f"{days // 365}y"
-
-
-def _truncate(s: str, width: int) -> str:
-    if width <= 0:
-        return ""
-    if len(s) <= width:
-        return s
-    if width <= 1:
-        return s[:width]
-    return s[: width - 1] + "…"
 
 
 def _topic_state(topic: dict) -> str:
@@ -195,7 +161,7 @@ class MainScreen(Screen):
         self._feed_has_more: dict[str, bool] = {}
         self._feed_loading_more: set[str] = set()
         self._did_initial_load = False
-        self._thread_prefetch: dict[int, dict] = {}
+        self._thread_prefetch: dict[int, tuple[dict, float]] = {}
         self._prefetch_timer = None
 
     def on_screen_resume(self) -> None:
@@ -305,7 +271,8 @@ class MainScreen(Screen):
         if not topic:
             return
         tid = topic.get("id")
-        if not tid or tid in self._thread_prefetch:
+        cached = self._thread_prefetch.get(tid) if tid else None
+        if not tid or (cached and time.monotonic() - cached[1] < 45):
             return
         if self._prefetch_timer is not None:
             self._prefetch_timer.stop()
@@ -315,18 +282,16 @@ class MainScreen(Screen):
 
     @work(thread=True, exclusive=False, group="prefetch-thread")
     def _do_prefetch(self, tid: int, topic: dict) -> None:
-        if tid in self._thread_prefetch:
-            return
         try:
             last_read = topic.get("last_read_post_number")
-            near_post = last_read if isinstance(last_read, int) and last_read > 1 else None
-            data = self.app.client.thread(tid, near_post=near_post)
-        except Exception:  # noqa: BLE001
+            near_post = last_read + 1 if isinstance(last_read, int) and last_read > 0 else None
+            data = self.app.client.topic(tid, near_post=near_post)
+        except ApiError:
             return
         self.app.call_from_thread(self._store_prefetch, tid, data)
 
     def _store_prefetch(self, tid: int, data: dict) -> None:
-        self._thread_prefetch[tid] = data
+        self._thread_prefetch[tid] = (data, time.monotonic())
         # Keep cache from growing unbounded.
         if len(self._thread_prefetch) > 10:
             self._thread_prefetch.pop(next(iter(self._thread_prefetch)))
@@ -419,14 +384,11 @@ class MainScreen(Screen):
     @work(thread=True, exclusive=True, group="feed")
     def _load_feed(self, feed: str) -> None:
         try:
-            topics, more_url = self.app.client.feed_page(feed, 0)
-        except Unauthorized:
-            self.app.call_from_thread(self.app.reauth)
-            return
-        except Exception as e:  # noqa: BLE001
-            self.app.call_from_thread(
-                self.app.notify, f"Load failed: {e}", severity="error"
-            )
+            d = self.app.client.feed(feed, 0)
+            tl = d.get("topic_list") or {}
+            topics, more_url = tl.get("topics") or [], tl.get("more_topics_url")
+        except ApiError as e:
+            self.app.call_from_thread(self.app.report_error, e, "Load")
             return
         self.app.call_from_thread(self._populate_feed, feed, topics, bool(more_url))
 
@@ -459,14 +421,11 @@ class MainScreen(Screen):
     def _load_more_feed(self, feed: str) -> None:
         next_page = self._feed_page.get(feed, 0) + 1
         try:
-            topics, more_url = self.app.client.feed_page(feed, next_page)
-        except Unauthorized:
-            self.app.call_from_thread(self.app.reauth)
-            return
-        except Exception as e:  # noqa: BLE001
-            self.app.call_from_thread(
-                self.app.notify, f"Load more failed: {e}", severity="error"
-            )
+            d = self.app.client.feed(feed, next_page)
+            tl = d.get("topic_list") or {}
+            topics, more_url = tl.get("topics") or [], tl.get("more_topics_url")
+        except ApiError as e:
+            self.app.call_from_thread(self.app.report_error, e, "Load more")
             self._feed_loading_more.discard(feed)
             return
         self.app.call_from_thread(self._append_feed_page, feed, topics, bool(more_url), next_page)
@@ -513,13 +472,8 @@ class MainScreen(Screen):
     def _load_categories(self) -> None:
         try:
             cats = self.app.client.categories()
-        except Unauthorized:
-            self.app.call_from_thread(self.app.reauth)
-            return
-        except Exception as e:  # noqa: BLE001
-            self.app.call_from_thread(
-                self.app.notify, f"Load failed: {e}", severity="error"
-            )
+        except ApiError as e:
+            self.app.call_from_thread(self.app.report_error, e, "Load")
             return
         self.app.call_from_thread(self._populate_categories, cats)
 
@@ -547,23 +501,18 @@ class MainScreen(Screen):
     @work(thread=True, exclusive=True, group="pms")
     def _load_messages(self) -> None:
         try:
-            user = self.app.cfg.username or self.app.client.current_username()
+            user = self.app.site.username or self.app.cfg.username
             if not user:
-                self.app.call_from_thread(
-                    self.app.notify, "No username on record — log in again.", severity="error"
-                )
+                user = self.app.client.current_user().get("username", "")
+            if not user:
+                self.app.call_from_thread(self.app.reauth)
                 return
             if not self.app.cfg.username:
                 self.app.cfg.username = user
                 self.app.cfg.save()
-            msgs = self.app.client.private_messages(user)
-        except Unauthorized:
-            self.app.call_from_thread(self.app.reauth)
-            return
-        except Exception as e:  # noqa: BLE001
-            self.app.call_from_thread(
-                self.app.notify, f"Load failed: {e}", severity="error"
-            )
+            msgs = (self.app.client.private_messages(user).get("topic_list") or {}).get("topics") or []
+        except ApiError as e:
+            self.app.call_from_thread(self.app.report_error, e, "Load")
             return
         self.app.call_from_thread(self._populate_messages, msgs)
 
@@ -589,14 +538,9 @@ class MainScreen(Screen):
     @work(thread=True, exclusive=True, group="notifs")
     def _load_notifications(self) -> None:
         try:
-            notifs = self.app.client.notifications()
-        except Unauthorized:
-            self.app.call_from_thread(self.app.reauth)
-            return
-        except Exception as e:  # noqa: BLE001
-            self.app.call_from_thread(
-                self.app.notify, f"Load failed: {e}", severity="error"
-            )
+            notifs = self.app.client.notifications().get("notifications") or []
+        except ApiError as e:
+            self.app.call_from_thread(self.app.report_error, e, "Load")
             return
         self.app.call_from_thread(self._populate_notifications, notifs)
 
@@ -618,7 +562,7 @@ class MainScreen(Screen):
             who = (n.get("data") or {}).get("display_username", "") or ""
             t.add_row(
                 "·" if n.get("read") else "●",
-                _truncate(NOTIFICATION_TYPES.get(n.get("notification_type"), "?"), 12),
+                _truncate(self.app.site.notification_name(n.get("notification_type")), 14),
                 _truncate(who, 14),
                 _truncate(title, title_w),
                 key=key,
@@ -651,13 +595,8 @@ class MainScreen(Screen):
     def _run_search(self, query: str) -> None:
         try:
             res = self.app.client.search(query)
-        except Unauthorized:
-            self.app.call_from_thread(self.app.reauth)
-            return
-        except Exception as e:  # noqa: BLE001
-            self.app.call_from_thread(
-                self.app.notify, f"Search failed: {e}", severity="error"
-            )
+        except ApiError as e:
+            self.app.call_from_thread(self.app.report_error, e, "Search")
             return
         self.app.call_from_thread(self._populate_search, res)
 
@@ -703,7 +642,7 @@ class MainScreen(Screen):
             if topic:
                 tid = topic.get("id")
                 prefetched = self._thread_prefetch.pop(int(tid), None) if tid else None
-                self.app.push_screen(ThreadScreen(topic, prefetched_data=prefetched))
+                self.app.push_screen(ThreadScreen(topic, prefetched=prefetched))
         elif key.startswith("cat:"):
             cat = self._topic_cache.get(key)
             if cat:
@@ -717,9 +656,8 @@ class MainScreen(Screen):
                     "title": notif.get("fancy_title") or (notif.get("data") or {}).get("topic_title", ""),
                 }
                 post_number = notif.get("post_number")
-                if isinstance(post_number, int) and post_number > 1:
-                    topic["last_read_post_number"] = post_number - 1
-                self.app.push_screen(ThreadScreen(topic))
+                target = post_number if isinstance(post_number, int) and post_number > 0 else None
+                self.app.push_screen(ThreadScreen(topic, target_post=target))
 
     # --- compose actions ---
     def action_search(self) -> None:
@@ -742,13 +680,8 @@ class MainScreen(Screen):
     def _fetch_cats_then_compose(self) -> None:
         try:
             cats = self.app.client.categories()
-        except Unauthorized:
-            self.app.call_from_thread(self.app.reauth)
-            return
-        except Exception as e:  # noqa: BLE001
-            self.app.call_from_thread(
-                self.app.notify, f"Load failed: {e}", severity="error"
-            )
+        except ApiError as e:
+            self.app.call_from_thread(self.app.report_error, e, "Load")
             return
         self._categories_cache = cats
         self.app.call_from_thread(self._show_new_topic_modal, cats)
@@ -775,13 +708,8 @@ class MainScreen(Screen):
     def _submit_topic(self, title: str, body: str, category_id: int) -> None:
         try:
             self.app.client.create_topic(title, body, category_id)
-        except Unauthorized:
-            self.app.call_from_thread(self.app.reauth)
-            return
-        except Exception as e:  # noqa: BLE001
-            self.app.call_from_thread(
-                self.app.notify, f"Post failed: {e}", severity="error"
-            )
+        except ApiError as e:
+            self.app.call_from_thread(self.app.report_error, e, "Post")
             return
         self.app.call_from_thread(self.app.notify, "Topic created.", severity="information")
         self.app.call_from_thread(self._load_for_tab, self._current_tab_id())
@@ -808,13 +736,8 @@ class MainScreen(Screen):
     def _submit_pm(self, title: str, body: str, recipients: list[str]) -> None:
         try:
             self.app.client.send_pm(title, body, recipients)
-        except Unauthorized:
-            self.app.call_from_thread(self.app.reauth)
-            return
-        except Exception as e:  # noqa: BLE001
-            self.app.call_from_thread(
-                self.app.notify, f"Send failed: {e}", severity="error"
-            )
+        except ApiError as e:
+            self.app.call_from_thread(self.app.report_error, e, "Send")
             return
         self.app.call_from_thread(self.app.notify, "Message sent.", severity="information")
 
@@ -829,35 +752,7 @@ class MainScreen(Screen):
 
     @work(thread=True, exclusive=True, group="upload")
     def _do_upload(self, path: str) -> None:
-        import os
-        expanded = os.path.expanduser(path)
-        if not os.path.isfile(expanded):
-            self.app.call_from_thread(
-                self.app.notify, f"No such file: {expanded}", severity="error"
-            )
-            return
-        try:
-            result = self.app.client.upload(expanded)
-        except Unauthorized:
-            self.app.call_from_thread(self.app.reauth)
-            return
-        except Exception as e:  # noqa: BLE001
-            self.app.call_from_thread(
-                self.app.notify, f"Upload failed: {e}", severity="error"
-            )
-            return
-        url = result.get("short_url") or result.get("url") or ""
-        name = result.get("original_filename") or os.path.basename(expanded)
-        is_image = (result.get("extension") or "").lower() in (
-            "png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"
-        )
-        md = f"![{name}]({url})" if is_image else f"[{name}]({url})"
-        _copy_to_clipboard(md)
-        self.app.call_from_thread(
-            self.app.notify,
-            f"Uploaded. Markdown copied: {md}",
-            severity="information",
-        )
+        upload_and_copy(self.app, path)
 
 
 def _strip_title_header(text: str) -> str:
@@ -905,16 +800,10 @@ class CategoryTopicsScreen(Screen):
     @work(thread=True, exclusive=True, group="cat-topics")
     def _fetch(self) -> None:
         try:
-            topics = self.app.client.category_topics(
-                self._cat.get("slug", ""), int(self._cat.get("id", 0))
-            )
-        except Unauthorized:
-            self.app.call_from_thread(self.app.reauth)
-            return
-        except Exception as e:  # noqa: BLE001
-            self.app.call_from_thread(
-                self.app.notify, f"Load failed: {e}", severity="error"
-            )
+            d = self.app.client.category_feed(self._cat)
+            topics = (d.get("topic_list") or {}).get("topics") or []
+        except ApiError as e:
+            self.app.call_from_thread(self.app.report_error, e, "Load")
             return
         self.app.call_from_thread(self._populate, topics)
 

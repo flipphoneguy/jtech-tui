@@ -8,7 +8,7 @@ from textual.binding import Binding
 from textual.screen import Screen
 from textual.widgets import DataTable, Header, LoadingIndicator, Static
 
-from ..api import Unauthorized
+from ..api import ApiError
 from .smart_footer import SmartFooter
 from .user_profile import UserProfileScreen
 
@@ -82,7 +82,13 @@ class LeaderboardScreen(Screen):
     def _resolve_id_and_fetch(self) -> None:
         self.app.call_from_thread(self._show_loading)
         if self._leaderboard_id is None:
-            self._leaderboard_id = self.app.client.default_leaderboard_id()
+            raw = self.app.site.raw.get("default_gamification_leaderboard_id")
+            if not raw:
+                try:
+                    raw = self.app.client.get("/site.json").get("default_gamification_leaderboard_id")
+                except ApiError:
+                    raw = None
+            self._leaderboard_id = int(raw) if raw else None
         if self._leaderboard_id is None:
             self.app.call_from_thread(
                 self.app.notify,
@@ -101,13 +107,8 @@ class LeaderboardScreen(Screen):
         self.app.call_from_thread(self._show_loading)
         try:
             data = self.app.client.leaderboard(bid, period=self._period)
-        except Unauthorized:
-            self.app.call_from_thread(self.app.reauth)
-            return
-        except Exception as e:  # noqa: BLE001
-            self.app.call_from_thread(
-                self.app.notify, f"Load failed: {e}", severity="error"
-            )
+        except ApiError as e:
+            self.app.call_from_thread(self.app.report_error, e, "Load")
             self.app.call_from_thread(self._hide_loading)
             return
         self.app.call_from_thread(self._populate, data)

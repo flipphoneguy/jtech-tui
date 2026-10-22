@@ -1,8 +1,6 @@
 """Line-API thread view.
 
-Every post is rendered to a list of strips once per width. Inserting posts above
-the viewport shifts ``scroll_y`` by their exact height in the same call, so the
-view never jumps.
+Every post is rendered to a list of strips once per width. Inserting posts above the viewport shifts ``scroll_y`` by their exact height in the same call, so the view never jumps.
 """
 
 from __future__ import annotations
@@ -147,6 +145,7 @@ class PostStream(ScrollView, can_focus=True):
         self.more_above = False
         self.more_below = False
         self._seen: set[int] = set()
+        self._pending_top = False
 
     # --- data ---
 
@@ -166,7 +165,16 @@ class PostStream(ScrollView, can_focus=True):
                 or (e.post.get("reply_to_user") or {}).get("username")
             )
 
-    def set_posts(self, posts: list[dict], cursor_number: int | None = None) -> None:
+    def set_posts(
+        self,
+        posts: list[dict],
+        cursor_number: int | None = None,
+        *,
+        more_above: bool = False,
+        more_below: bool = False,
+    ) -> None:
+        self.more_above = more_above
+        self.more_below = more_below
         self.entries = [self._make_entry(p) for p in sorted(posts, key=lambda p: p.get("post_number") or 0)]
         self._link_parents()
         self._seen.clear()
@@ -175,8 +183,9 @@ class PostStream(ScrollView, can_focus=True):
             idx = self.index_of_number(cursor_number, nearest=True)
             if idx is not None:
                 self.cursor = idx
+        # The size may not be known yet (just made visible); _relayout puts the cursor at the top once it is.
+        self._pending_top = True
         self._relayout(anchor=None)
-        self.scroll_to(y=self._starts[self.cursor] if self.entries else 0, animate=False, force=True)
         self._after_move()
 
     def add_posts(self, posts: Iterable[dict]) -> int:
@@ -305,16 +314,26 @@ class PostStream(ScrollView, can_focus=True):
             y += e.height
         self._starts = starts
         self._total = y
-        self.virtual_size = Size(width, y)
-        if anchor is not None and anchor[0] in self.entries:
+        # Reserve a screen of space while more posts exist below, so any post can sit at the top and arriving posts fill it without moving anything.
+        pad = self._view_h() if self.more_below else 0
+        self.virtual_size = Size(width, y + pad)
+        if self._pending_top and self.entries:
+            self._pending_top = self.scrollable_content_region.height <= 1
+            self.scroll_to(y=starts[self.cursor], animate=False, force=True)
+        elif anchor is not None and anchor[0] in self.entries:
             idx = self.entries.index(anchor[0])
             self.scroll_to(y=starts[idx] + anchor[1], animate=False, force=True)
         self.refresh()
 
     def _anchor(self) -> tuple[Entry, int] | None:
+        """The entry to hold still across a relayout and its offset from the top of the view."""
         if not self.entries:
             return None
         top = int(self.scroll_y)
+        if self._starts and self.cursor < len(self._starts):
+            start = self._starts[self.cursor]
+            if top <= start < top + self._view_h():
+                return self.entries[self.cursor], top - start
         idx = max(0, bisect_right(self._starts, top) - 1)
         if idx >= len(self.entries):
             return None
@@ -448,6 +467,8 @@ class PostStream(ScrollView, can_focus=True):
 
     def _line(self, abs_y: int, width: int) -> Strip:
         if abs_y >= self._total or not self.entries:
+            if abs_y == self._total and self.more_below:
+                return Strip(Text("  loading…", style=C["meta"]).render(self.app.console))
             return Strip.blank(width)
         idx = bisect_right(self._starts, abs_y) - 1
         e = self.entries[idx]

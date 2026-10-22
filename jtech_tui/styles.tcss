@@ -140,8 +140,12 @@ ModalScreen #modal-hint {
 #thread-header {
     background: $panel;
     color: $accent;
-    text-style: bold;
-    padding: 0 2;
+    padding: 0 1;
+    height: auto;
+    max-height: 2;
+}
+
+ThreadScreen #loader {
     height: 1;
 }
 

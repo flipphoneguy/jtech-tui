@@ -65,8 +65,7 @@ class Emoji:
             return _RICH_EMOJI[name]
         if name in _LEGACY:
             return _LEGACY[name]
-        # Aliases first: a bare Unicode name lookup can hit a plain symbol
-        # (``ballot_box`` is ☐ in Unicode but 🗳 on Discourse).
+        # Aliases first: a bare Unicode name lookup can hit a plain symbol (``ballot_box`` is ☐ in Unicode but 🗳 on Discourse).
         aliases = self.aliases.get(name, [])
         for a in aliases:
             k = a.replace(" ", "_")
@@ -112,8 +111,7 @@ class Emoji:
 class Site:
     """Everything the UI needs to know about the forum and the logged-in user.
 
-    Loaded once at startup (from disk cache first, then refreshed). Replaces the
-    lists the old client hardcoded: notification types, reactions, flag types.
+    Loaded once at startup (from disk cache first, then refreshed). Replaces the lists the old client hardcoded: notification types, reactions, flag types.
     """
 
     CACHE_TTL = 24 * 3600

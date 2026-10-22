@@ -1,1482 +1,755 @@
 from __future__ import annotations
 
-import re
-import shutil
-import subprocess
-from datetime import datetime, timezone
-from html.parser import HTMLParser
+import io
+import os
+import time
 
+from rich.console import Console
+from rich.text import Text
 from textual import on, work
-from textual.message import Message
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.screen import Screen
-from textual.widgets import (
-    Header,
-    ListItem,
-    ListView,
-    LoadingIndicator,
-    Markdown,
-    Static,
-)
+from textual.widgets import Header, LoadingIndicator, Static
 
-from .smart_footer import SmartFooter
-
-from ..api import Unauthorized
+from ..api import ApiError
 from ..editor import edit_markdown
-from .composer import (
-    ConfirmModal,
-    CopyMenuModal,
-    FilePickerModal,
-    ReactionModal,
-    ReactorsModal,
-)
+from ..util import copy_to_clipboard, truncate
+from ..widgets import Entry, PostStream
+from .composer import ConfirmModal, CopyMenuModal, FilePickerModal, ReactionModal, ReactorsModal
+from .smart_footer import SmartFooter
 from .user_profile import UserProfileScreen
 
-
-class _HTMLTextExtractor(HTMLParser):
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=True)
-        self.parts: list[str] = []
-
-    def handle_data(self, data: str) -> None:
-        self.parts.append(data)
-
-    def handle_starttag(self, tag: str, attrs) -> None:
-        if tag in ("br", "p", "div", "li"):
-            self.parts.append("\n")
+CHUNK = 20
+POLL_SECONDS = 30.0
+PREFETCH_FRESH = 60.0
 
 
-def _strip_html(s: str) -> str:
-    p = _HTMLTextExtractor()
-    try:
-        p.feed(s)
-    except Exception:  # noqa: BLE001
-        return s
-    return re.sub(r"\n{3,}", "\n\n", "".join(p.parts))
-
-
-_REACTION_EMOJI = {
-    "ok_hand": "👌",
-    "man_shrugging": "🤷",
-    "folded_hands": "🙏",
-    "heart": "❤️",
-    "+1": "👍",
-    "-1": "👎",
-    "laughing": "😆",
-    "open_mouth": "😮",
-    "cry": "😢",
-    "clap": "👏",
-    "hugs": "🤗",
-    "confetti_ball": "🎉",
-    "thinking": "🤔",
-    "rocket": "🚀",
-    "eyes": "👀",
-}
-
-
-def _reaction_summary(post: dict) -> str:
-    reactions = post.get("reactions") or []
-    if reactions:
-        parts = []
-        for r in reactions:
-            rid = r.get("id") or ""
-            count = r.get("count") or 0
-            if not count:
-                continue
-            emoji = _REACTION_EMOJI.get(rid, f":{rid}:")
-            parts.append(f"{emoji} {count}")
-        return "  ".join(parts)
-    actions = post.get("actions_summary") or []
-    if isinstance(actions, list):
-        for a in actions:
-            if a.get("id") == 2 and a.get("count"):
-                return f"❤ {a['count']}"
-    return ""
-
-
-_QUOTE_RE = re.compile(r"\[quote=([^\]]*)\]([\s\S]*?)\[/quote\]")
-
-
-def _render_quotes(raw: str) -> str:
-    """Convert Discourse `[quote=...]...[/quote]` blocks to markdown blockquotes."""
-    def repl(m: re.Match[str]) -> str:
-        attrs = m.group(1)
-        body = m.group(2).strip()
-        user_match = re.search(r"\"?([\w.\-]+)", attrs)
-        user = user_match.group(1) if user_match else ""
-        quoted = "\n".join(f"> {line}" if line else ">" for line in body.splitlines())
-        header = f"> **@{user} wrote:**" if user else "> **Quoted:**"
-        return f"{header}\n>\n{quoted}\n"
-
-    prev = None
-    out = raw
-    while out != prev:
-        prev = out
-        out = _QUOTE_RE.sub(repl, out)
-    return out
-
-
-_COLLAPSE_THRESHOLD = 40
-
-
-def _code_blocks(raw: str) -> list[str]:
-    """Return fenced code block contents from markdown source."""
-    out: list[str] = []
-    lines = raw.splitlines()
-    i = 0
-    while i < len(lines):
-        line = lines[i].rstrip()
-        stripped = line.lstrip()
-        if stripped.startswith("```") or stripped.startswith("~~~"):
-            fence = stripped[:3]
-            buf: list[str] = []
-            i += 1
-            while i < len(lines) and not lines[i].lstrip().startswith(fence):
-                buf.append(lines[i])
-                i += 1
-            out.append("\n".join(buf))
-        i += 1
-    return out
-
-
-def _post_markdown(
-    post: dict,
-    *,
-    reply_to_username: str | None = None,
-    collapsed: bool = False,
-) -> str:
-    body = post.get("raw") or _strip_html(post.get("cooked", ""))
-    body = _render_quotes(body)
-    who = post.get("username") or "?"
-    when = _time_ago(post.get("created_at", ""))
-    header = f"**@{who}** · {when}"
-    pn = post.get("post_number")
-    if isinstance(pn, int):
-        header = f"{header}   —   **#{pn}**"
-    summary = _reaction_summary(post)
-    if summary:
-        header = f"{header}   —   {summary}"
-    breadcrumb = ""
-    rpn = post.get("reply_to_post_number")
-    if isinstance(rpn, int) and rpn > 0:
-        target = reply_to_username or (post.get("reply_to_user") or {}).get("username") or ""
-        who_bit = f"@{target} " if target else ""
-        breadcrumb = f"> ↱ replying to {who_bit}#{rpn}\n\n"
-    if collapsed:
-        lines = body.splitlines()
-        preview = "\n".join(lines[:6])
-        body = f"{preview}\n\n*…collapsed ({len(lines)} lines). Press `x` to expand.*"
-    return f"{header}\n\n{breadcrumb}{body}"
-
-
-def _time_ago(s: str) -> str:
-    """Convert an ISO timestamp to a short relative string like 3h, 2d, 1mo."""
-    if not s:
-        return ""
-    try:
-        t = datetime.fromisoformat(s.replace("Z", "+00:00"))
-    except ValueError:
-        return s
-    secs = int((datetime.now(timezone.utc) - t).total_seconds())
-    if secs < 60:
-        return "now"
-    if secs < 3600:
-        return f"{secs // 60}m"
-    if secs < 86400:
-        return f"{secs // 3600}h"
-    days = secs // 86400
-    if days < 7:
-        return f"{days}d"
-    if days < 30:
-        return f"{days // 7}w"
-    if days < 365:
-        return f"{days // 30}mo"
-    return f"{days // 365}y"
-
-
-def _copy_to_clipboard(text: str) -> bool:
-    """Best-effort clipboard set across Termux/macOS/Linux."""
-    for cmd in (
-        ["termux-clipboard-set"],
-        ["pbcopy"],
-        ["wl-copy"],
-        ["xclip", "-selection", "clipboard"],
-        ["xsel", "-ib"],
-    ):
-        if shutil.which(cmd[0]):
-            try:
-                subprocess.run(cmd, input=text.encode(), check=True, timeout=5)
-                return True
-            except Exception:  # noqa: BLE001
-                continue
-    return False
-
-
-def _thread_markdown(thread: dict) -> str:
-    posts = ((thread.get("post_stream") or {}).get("posts") or [])
-    title = thread.get("title") or thread.get("fancy_title") or ""
-    sep = "\n\n---\n\n"
-    body = sep.join(_post_markdown(p) for p in posts)
-    return f"# {title}\n\n{body}"
-
-
-class PostItem(ListItem):
-    """A single post inside the thread view."""
-
-    def __init__(
-        self,
-        post: dict,
-        *,
-        reply_to_username: str | None = None,
-        collapsed: bool = False,
-    ) -> None:
-        super().__init__()
-        self.post = post
-        self.reply_to_username = reply_to_username
-        self.collapsed = collapsed
-        # Pre-reserve approximate height so virtual_size is roughly accurate from
-        # frame 0. Markdown renders asynchronously over many frames; without this,
-        # posts above a prepended target report height=0 until measured, causing
-        # the viewport to flash upward during prepend / background-load-above.
-        raw = post.get("raw") or _strip_html(post.get("cooked", ""))
-        if collapsed:
-            estimate = 11
-        else:
-            estimate = max(4, len(raw.splitlines()) + 3)
-        self.styles.min_height = estimate
-
-    def compose(self) -> ComposeResult:
-        yield Markdown(self._md())
-
-    def _md(self) -> str:
-        return _post_markdown(
-            self.post,
-            reply_to_username=self.reply_to_username,
-            collapsed=self.collapsed,
-        )
-
-    def refresh_body(self) -> None:
-        try:
-            self.query_one(Markdown).update(self._md())
-        except Exception:  # noqa: BLE001
-            pass
-
-    def toggle_collapse(self) -> None:
-        self.collapsed = not self.collapsed
-        # Drop min_height so the widget can shrink back down when collapsing.
-        # Markdown will expand the item if the rendered body is taller.
-        self.styles.min_height = 4
-        self.refresh_body()
-
-
-class PostsList(ListView):
-    """ListView with vim-style bindings and scroll-within-post for long posts.
-
-    Emits ``NeedMore`` when the cursor tries to move past the first or last
-    loaded post so the parent screen can lazy-load the next chunk.
-    """
-
-    class NeedMore(Message):
-        """Emitted when the user navigates past the end/start of loaded posts."""
-        def __init__(self, posts_list: "PostsList", direction: str) -> None:
-            super().__init__()
-            self.posts_list = posts_list
-            self.direction = direction  # "above" | "below"
-
-    def __init__(self, *args, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
-        self._suppress_index_scroll = False
-
-    def watch_index(self, old_index: int | None, new_index: int | None) -> None:
-        """Override to allow suppressing the auto-scroll when prepending posts."""
-        if self._suppress_index_scroll:
-            if old_index is not None:
-                try:
-                    self._nodes[old_index].highlighted = False
-                except IndexError:
-                    pass
-            if new_index is not None:
-                try:
-                    self._nodes[new_index].highlighted = True
-                except IndexError:
-                    pass
-        else:
-            super().watch_index(old_index, new_index)
-
-    BINDINGS = [
-        Binding("j", "cursor_down", "Down", show=False),
-        Binding("k", "cursor_up", "Up", show=False),
-        Binding("g", "goto_top", "Top", show=False),
-        Binding("G", "goto_bottom", "Bottom", show=False),
+def strip_template(text: str) -> str:
+    """Drop the ``<!-- … -->`` hint lines we put at the top of editor buffers."""
+    lines = [
+        line for line in text.splitlines()
+        if not (line.strip().startswith("<!--") and line.strip().endswith("-->"))
     ]
-
-    def action_goto_top(self) -> None:
-        if len(self.children):
-            self.index = 0
-
-    def action_goto_bottom(self) -> None:
-        n = len(self.children)
-        if n:
-            self.index = n - 1
-
-    def _scroll_step(self) -> int:
-        return max(1, self.size.height - 2)
-
-    def action_cursor_down(self) -> None:
-        highlighted = self.highlighted_child
-        if highlighted is not None:
-            region = highlighted.virtual_region
-            if region.y + region.height > self.scroll_y + self.size.height:
-                self.scroll_relative(y=self._scroll_step(), animate=False)
-                return
-        n = len(self._nodes)
-        if n and isinstance(self.index, int) and self.index >= n - 1:
-            self.post_message(self.NeedMore(self, "below"))
-            return
-        super().action_cursor_down()
-
-    def action_cursor_up(self) -> None:
-        # Clamp a stale index before anything else (can happen after merge/remove).
-        n = len(self._nodes)
-        if isinstance(self.index, int) and n > 0 and self.index >= n:
-            self.index = n - 1
-        highlighted = self.highlighted_child
-        if highlighted is not None:
-            region = highlighted.virtual_region
-            if region.y < self.scroll_y:
-                self.scroll_relative(y=-self._scroll_step(), animate=False)
-                return
-        if self.index == 0:
-            self.post_message(self.NeedMore(self, "above"))
-            return
-        # Secondary guard: some Textual versions don't reflect the clamped index
-        # inside super() immediately, causing IndexError in loop_from_index.
-        if isinstance(self.index, int) and self.index >= len(self._nodes):
-            return
-        super().action_cursor_up()
+    return "\n".join(lines)
 
 
 class ThreadScreen(Screen):
     BINDINGS = [
-        Binding("escape", "back", "Back"),
-        Binding("q", "back", "Back"),
+        Binding("escape,q", "back", "Back"),
         Binding("r", "reply", "Reply↩post"),
         Binding("t", "reply_topic", "Reply↩topic"),
         Binding("Q", "quote_reply", "Quote"),
+        Binding("plus,enter", "react", "React"),
+        Binding("ctrl+r", "react", "React", show=False),
+        Binding("l", "show_reactors", "Reactors"),
         Binding("y", "yank", "Copy"),
+        Binding("Y", "copy_menu", "Copy…"),
+        Binding("o", "open_url", "Browser"),
+        Binding("p", "jump_to_parent", "Jump→reply"),
         Binding("u", "user_profile", "Profile"),
+        Binding("x", "toggle_collapse", "Collapse"),
+        Binding("S", "toggle_spoilers", "Spoilers"),
         Binding("E", "edit_post", "Edit"),
         Binding("D", "delete_post", "Delete"),
         Binding("a", "toggle_auto_refresh", "Auto"),
-        Binding("U", "upload", "Upload"),
         Binding("e", "open_in_editor", "Editor"),
-        Binding("+", "react", "React"),
-        Binding("ctrl+r", "react", "React", show=False),
-        Binding("o", "open_url", "Browser"),
+        Binding("U", "upload", "Upload"),
         Binding("R", "reload", "Reload"),
-        Binding("p", "jump_to_parent", "Jump→reply"),
-        Binding("l", "show_reactors", "Reactors"),
-        Binding("x", "toggle_collapse", "Collapse"),
-        Binding("Y", "copy_menu", "Copy…"),
-        Binding("g", "goto_top", "Top"),
-        Binding("G", "goto_bottom", "Bottom"),
+        Binding("g,home", "goto_top", "Top"),
+        Binding("G,end", "goto_bottom", "Bottom"),
     ]
 
-    def __init__(self, topic: dict, prefetched_data: dict | None = None) -> None:
+    def __init__(
+        self,
+        topic: dict,
+        prefetched: tuple[dict, float] | None = None,
+        target_post: int | None = None,
+    ) -> None:
         super().__init__()
         self._topic = topic
-        self._topic_id = int(topic.get("id", 0))
-        self._thread: dict | None = None
-        self._auto_refresh = None  # Timer handle
-        self._stream: list[int] = []
-        self._loaded_ids: set[int] = set()
-        self._loading_above = False
-        self._loading_below = False
-        self._prefetched_data = prefetched_data
-        self._prefetch_below: list[dict] | None = None
+        self._tid = int(topic.get("id", 0))
+        self._prefetched = prefetched
+        self._target = target_post
+        self._data: dict = {}
+        self._ids: list[int] = []
+        self._loading: set[str] = set()
+        self._auto = None
+        self._seen_buf: set[int] = set()
+        self._seen_timer = None
 
-    def on_unmount(self) -> None:
-        if self._auto_refresh is not None:
-            self._auto_refresh.stop()
-            self._auto_refresh = None
+    # --- setup ---
 
     def compose(self) -> ComposeResult:
         yield Header()
         yield Static(self._topic.get("title", ""), id="thread-header")
         yield LoadingIndicator(id="loader")
-        yield PostsList(id="posts")
+        yield PostStream(self.app.site, self.app.client.base_url, self._tid, id="posts")
         yield SmartFooter()
 
-    def on_mount(self) -> None:
-        self.query_one("#posts", PostsList).display = False
-        self._load()
-        self._auto_refresh = self.set_interval(30.0, self._poll_new_posts)
+    @property
+    def stream(self) -> PostStream:
+        return self.query_one("#posts", PostStream)
 
-    def _load(self) -> None:
-        self.query_one("#loader", LoadingIndicator).display = True
-        self.query_one("#posts", PostsList).display = False
-        self._fetch()
+    def on_mount(self) -> None:
+        self._auto = self.set_interval(POLL_SECONDS, self._poll)
+        pre = self._prefetched
+        self._prefetched = None
+        if pre and time.monotonic() - pre[1] < PREFETCH_FRESH and not self._target:
+            self._show(pre[0], None)
+        else:
+            self._load(self._target)
+
+    def on_unmount(self) -> None:
+        self._flush_seen()
+
+    def _landing(self, data: dict, target: int | None) -> int:
+        if target:
+            return target
+        last_read = data.get("last_read_post_number") or self._topic.get("last_read_post_number")
+        highest = data.get("highest_post_number") or 0
+        if not last_read:
+            return 1
+        return last_read + 1 if last_read < highest else last_read
+
+    def _load(self, target: int | None = None, *, quiet: bool = False) -> None:
+        if not quiet:
+            self.query_one("#loader").display = True
+        self._fetch(target)
 
     @work(thread=True, exclusive=True, group="thread")
-    def _fetch(self) -> None:
-        # Use prefetched data if available (from hovering on the feed row).
-        if self._prefetched_data:
-            data = self._prefetched_data
-            self._prefetched_data = None
-            self.app.call_from_thread(self._display_thread, data)
-            # Prefetch may be stale — fire a fresh fetch and silently merge any
-            # posts that arrived between hover and open. Without this, a new
-            # reply shows up as an unread pip but is invisible until R.
-            last_read = self._topic.get("last_read_post_number")
-            near_post = last_read if isinstance(last_read, int) and last_read > 1 else None
-            try:
-                fresh = self.app.client.thread(self._topic_id, near_post=near_post)
-            except Exception:  # noqa: BLE001
-                return
-            self.app.call_from_thread(self._merge_new_posts, fresh, notify=False)
-            return
-        last_read = self._topic.get("last_read_post_number")
-        near_post = last_read if isinstance(last_read, int) and last_read > 1 else None
+    def _fetch(self, target: int | None) -> None:
+        near = target
+        if near is None:
+            last = self._topic.get("last_read_post_number")
+            near = last + 1 if isinstance(last, int) and last > 0 else None
         try:
-            thread = self.app.client.thread(self._topic_id, near_post=near_post)
-        except Unauthorized:
-            self.app.call_from_thread(self.app.reauth)
+            data = self.app.client.topic(self._tid, near_post=near)
+        except ApiError as e:
+            self.app.call_from_thread(self._load_failed, e)
             return
-        except Exception as e:  # noqa: BLE001
-            self.app.call_from_thread(
-                self.app.notify, f"Load failed: {e}", severity="error"
-            )
-            return
-        self.app.call_from_thread(self._display_thread, thread)
-        # Posts beyond the initial chunk are loaded lazily on scroll.
+        self.app.call_from_thread(self._show, data, target)
 
-    def _display_thread(self, thread: dict) -> None:
-        self._thread = thread
-        self._stream = [
-            pid for pid in ((thread.get("post_stream") or {}).get("stream") or [])
-            if isinstance(pid, int)
-        ]
-        self._loaded_ids.clear()
-        self.query_one("#loader", LoadingIndicator).display = False
-        posts_list = self.query_one("#posts", PostsList)
-        posts_list.display = True
-        posts_list.clear()
-        posts = ((thread.get("post_stream") or {}).get("posts") or [])
-        by_number: dict[int, dict] = {
-            p["post_number"]: p for p in posts if isinstance(p.get("post_number"), int)
-        }
-        # Compute start_idx first so we only mount posts from the target onwards.
-        # This means position 0 of the list IS the target post — no scroll needed.
-        # Posts before the target are not in _loaded_ids and will lazy-load on k.
-        start_idx = 0
-        last_read = thread.get("last_read_post_number") or self._topic.get(
-            "last_read_post_number"
+    def _load_failed(self, e: Exception) -> None:
+        self.query_one("#loader").display = False
+        self.app.report_error(e, "Load")
+
+    def _show(self, data: dict, target: int | None) -> None:
+        self._data = data
+        self.app.site.set_reactions(data.get("valid_reactions"))
+        ps = data.get("post_stream") or {}
+        self._ids = [i for i in ps.get("stream") or [] if isinstance(i, int)]
+        s = self.stream
+        s.op_username = ((data.get("details") or {}).get("created_by") or {}).get("username", "")
+        s.my_username = self.app.site.username or self.app.cfg.username
+        self.query_one("#loader").display = False
+        posts = ps.get("posts") or []
+        got = {p.get("id") for p in posts}
+        idx = [i for i, pid in enumerate(self._ids) if pid in got]
+        s.set_posts(
+            posts,
+            cursor_number=self._landing(data, target),
+            more_above=bool(idx) and idx[0] > 0,
+            more_below=bool(idx) and idx[-1] < len(self._ids) - 1,
         )
-        if isinstance(last_read, int) and last_read > 0:
-            target_pn = last_read
-            for p in posts:
-                pn = p.get("post_number")
-                if isinstance(pn, int) and pn > last_read:
-                    target_pn = pn
-                    break
-            for i, p in enumerate(posts):
-                if p.get("post_number") == target_pn:
-                    start_idx = i
-                    break
-        for p in posts[start_idx:]:
-            rpn = p.get("reply_to_post_number")
-            parent_user = None
-            if isinstance(rpn, int):
-                parent = by_number.get(rpn)
-                if parent:
-                    parent_user = parent.get("username")
-            raw = p.get("raw") or _strip_html(p.get("cooked", ""))
-            long_post = len(raw.splitlines()) > _COLLAPSE_THRESHOLD
-            item = PostItem(p, reply_to_username=parent_user, collapsed=long_post)
-            posts_list.append(item)
-            pid = p.get("id")
-            if isinstance(pid, int):
-                self._loaded_ids.add(pid)
-        if posts[start_idx:]:
-            self.call_after_refresh(self._finish_initial_load, 0)
+        s.focus()
+        self._update_header()
 
-    def _finish_initial_load(self, start_idx: int) -> None:
-        posts_list = self.query_one("#posts", PostsList)
-        if posts_list.children and 0 <= start_idx < len(posts_list.children):
-            posts_list.index = start_idx
-        posts_list.focus()
-        # Markdown widgets measure themselves lazily; virtual_region.height is 0
-        # until after layout settles.  Retry each frame until it's ready.
-        if start_idx > 0:
-            self.call_after_refresh(self._do_initial_scroll, start_idx, 0)
-        pns = [
-            item.post.get("post_number")
-            for item in posts_list.children
-            if isinstance(item, PostItem) and isinstance(item.post.get("post_number"), int)
-        ]
-        if pns:
-            self._track_read(pns)
-        # Immediately background-load posts above the opening position.
-        if self._ids_to_load_above() and not self._loading_above:
-            self._loading_above = True
-            self._load_more_above()
+    # --- header ---
 
-    def _do_initial_scroll(self, start_idx: int, attempts: int) -> None:
-        try:
-            posts_list = self.query_one("#posts", PostsList)
-        except Exception:  # noqa: BLE001
+    def _update_header(self) -> None:
+        d = self._data or self._topic
+        title = d.get("fancy_title") or d.get("title") or ""
+        bits: list[str] = []
+        cat = self.app.site.category_label(d.get("category_id"))
+        if cat:
+            bits.append(cat)
+        tags = [t if isinstance(t, str) else t.get("name", "") for t in d.get("tags") or []]
+        if tags:
+            bits.append(" ".join(f"#{t}" for t in tags))
+        flags = []
+        if d.get("closed"):
+            flags.append("🔒 closed")
+        if d.get("archived"):
+            flags.append("archived")
+        if d.get("has_accepted_answer"):
+            flags.append("✓ solved")
+        if d.get("visible") is False:
+            flags.append("unlisted")
+        cur = self.stream.current
+        pos = f"{cur.number}/{d.get('highest_post_number') or len(self._ids)}" if cur else ""
+        width = (self.size.width or 80) - 2
+        t = Text(truncate(title, max(10, width - len(pos) - 2)), style="bold")
+        right = Text(pos, style="dim")
+        pad = max(1, width - t.cell_len - right.cell_len)
+        line = Text.assemble(t, " " * pad, right)
+        sub = " · ".join(bits + flags)
+        if sub:
+            line.append("\n" + truncate(sub, width), style="dim")
+        self.query_one("#thread-header", Static).update(line)
+
+    def on_resize(self) -> None:
+        self._update_header()
+
+    @on(PostStream.CursorMoved)
+    def _cursor_moved(self, event: PostStream.CursorMoved) -> None:
+        self._update_header()
+
+    # --- lazy loading ---
+
+    def _loaded_span(self) -> tuple[int, int]:
+        """Index range in the stream covered by loaded posts."""
+        loaded = {e.id for e in self.stream.entries}
+        idx = [i for i, pid in enumerate(self._ids) if pid in loaded]
+        if not idx:
+            return 0, -1
+        return idx[0], idx[-1]
+
+    def _update_edges(self) -> None:
+        lo, hi = self._loaded_span()
+        s = self.stream
+        s.more_above = lo > 0
+        s.more_below = hi < len(self._ids) - 1
+
+    @on(PostStream.NeedMore)
+    def _need_more(self, event: PostStream.NeedMore) -> None:
+        d = event.direction
+        if d in self._loading:
             return
-        n = len(posts_list.children)
-        if not n or start_idx >= n:
+        lo, hi = self._loaded_span()
+        if d == "above":
+            ids = self._ids[max(0, lo - CHUNK):lo]
+        else:
+            ids = self._ids[hi + 1:hi + 1 + CHUNK]
+        if not ids:
             return
-        item = posts_list.children[start_idx]
-        if item.virtual_region.height > 0:
-            item.scroll_visible(animate=False)
-        elif attempts < 20:
-            self.call_after_refresh(self._do_initial_scroll, start_idx, attempts + 1)
+        self._loading.add(d)
+        self._fetch_more(d, ids)
 
-    @work(thread=True, exclusive=False, group="read-track")
-    def _track_read(self, post_numbers: list[int]) -> None:
-        """Fire-and-forget: tell the server these posts were read."""
+    @work(thread=True, group="more")
+    def _fetch_more(self, direction: str, ids: list[int]) -> None:
         try:
-            self.app.client.mark_read(self._topic_id, post_numbers)
-        except Exception:  # noqa: BLE001
+            posts = self.app.client.posts_by_ids(self._tid, ids)
+        except ApiError as e:
+            self.app.call_from_thread(self._more_failed, direction, e)
+            return
+        self.app.call_from_thread(self._got_more, direction, posts)
+
+    def _more_failed(self, direction: str, e: Exception) -> None:
+        self._loading.discard(direction)
+        self.app.report_error(e, "Load")
+
+    def _got_more(self, direction: str, posts: list[dict]) -> None:
+        self._loading.discard(direction)
+        self.stream.add_posts(posts)
+        self._update_edges()
+        self._update_header()
+
+    # --- read tracking ---
+
+    @on(PostStream.Seen)
+    def _seen(self, event: PostStream.Seen) -> None:
+        self._seen_buf.update(event.numbers)
+        if self._seen_timer is None:
+            self._seen_timer = self.set_timer(2.0, self._flush_seen)
+
+    def _flush_seen(self) -> None:
+        self._seen_timer = None
+        if self._seen_buf:
+            nums = sorted(self._seen_buf)
+            self._seen_buf.clear()
+            self._mark_read(nums)
+
+    @work(thread=True, group="read")
+    def _mark_read(self, numbers: list[int]) -> None:
+        try:
+            self.app.client.mark_read(self._tid, numbers)
+        except ApiError:
             pass
 
-    # --- lazy post loading ---
+    # --- navigation ---
 
-    def _ids_to_load_below(self, n: int = 20) -> list[int]:
-        if not self._loaded_ids:
-            return self._stream[:n] if self._stream else []
-        last_pos = -1
-        for i, pid in enumerate(self._stream):
-            if pid in self._loaded_ids:
-                last_pos = i
-        if last_pos < 0 or last_pos >= len(self._stream) - 1:
-            return []
-        end = min(last_pos + 1 + n, len(self._stream))
-        return [pid for pid in self._stream[last_pos + 1: end] if pid not in self._loaded_ids]
-
-    def _ids_to_load_above(self, n: int = 20) -> list[int]:
-        if not self._loaded_ids:
-            return []
-        first_pos = len(self._stream)
-        for i, pid in enumerate(self._stream):
-            if pid in self._loaded_ids:
-                first_pos = i
-                break
-        if first_pos == 0:
-            return []
-        start = max(0, first_pos - n)
-        return [pid for pid in self._stream[start: first_pos] if pid not in self._loaded_ids]
-
-    @on(PostsList.NeedMore)
-    def _on_need_more(self, event: PostsList.NeedMore) -> None:
-        if event.direction == "below":
-            if not self._loading_below and self._ids_to_load_below():
-                self._loading_below = True
-                if self._prefetch_below:
-                    posts, self._prefetch_below = self._prefetch_below, None
-                    self._append_posts_below(posts)
-                else:
-                    self._load_more_below()
-        elif event.direction == "above":
-            if not self._loading_above and self._ids_to_load_above():
-                self._loading_above = True
-                self._load_more_above()
-
-    @work(thread=True, exclusive=True, group="thread-below")
-    def _load_more_below(self) -> None:
-        ids = self._ids_to_load_below()
-        if not ids:
-            self._loading_below = False
-            return
-        try:
-            posts = self.app.client.thread_fill_missing(self._topic_id, ids)
-        except Exception:  # noqa: BLE001
-            self._loading_below = False
-            return
-        if posts:
-            self.app.call_from_thread(self._append_posts_below, posts)
-        else:
-            self._loading_below = False
-
-    def _append_posts_below(self, posts: list[dict]) -> None:
-        self._insert_posts(posts)
-        self._loading_below = False
-        pns = [p.get("post_number") for p in posts if isinstance(p.get("post_number"), int)]
-        if pns:
-            self._track_read(pns)
-        # Prefetch next chunk in background so scrolling to the edge is instant.
-        next_ids = self._ids_to_load_below()
-        if next_ids and not self._prefetch_below:
-            self._prefetch_next_below(next_ids)
-
-    @work(thread=True, exclusive=False, group="prefetch-below")
-    def _prefetch_next_below(self, ids: list[int]) -> None:
-        try:
-            posts = self.app.client.thread_fill_missing(self._topic_id, ids)
-        except Exception:  # noqa: BLE001
-            return
-        if posts:
-            self.app.call_from_thread(self._store_prefetch_below, posts)
-
-    def _store_prefetch_below(self, posts: list[dict]) -> None:
-        self._prefetch_below = posts
-
-    @work(thread=True, exclusive=True, group="thread-above")
-    def _load_more_above(self) -> None:
-        ids = self._ids_to_load_above()
-        if not ids:
-            self._loading_above = False
-            return
-        try:
-            posts = self.app.client.thread_fill_missing(self._topic_id, ids)
-        except Exception:  # noqa: BLE001
-            self._loading_above = False
-            return
-        if posts:
-            self.app.call_from_thread(self._prepend_posts_above, posts)
-        else:
-            self._loading_above = False
-
-    def _prepend_posts_above(self, posts: list[dict]) -> None:
-        posts_list = self.query_one("#posts", PostsList)
-        saved_idx = posts_list.index
-        n_inserted = self._insert_posts(posts)
-        self._loading_above = False
-        pns = [p.get("post_number") for p in posts if isinstance(p.get("post_number"), int)]
-        if pns:
-            self._track_read(pns)
-        if isinstance(saved_idx, int) and n_inserted > 0:
-            new_idx = saved_idx + n_inserted
-            # Suppress watch_index scroll — new items have no height yet, so
-            # scroll_to_widget would jump to 0. We pin to the target in the loop.
-            posts_list._suppress_index_scroll = True
-            posts_list.index = new_idx
-            posts_list._suppress_index_scroll = False
-            self._restore_scroll_after_prepend(new_idx, 0)
-
-    def _restore_scroll_after_prepend(self, idx: int, attempts: int) -> None:
-        try:
-            posts_list = self.query_one("#posts", PostsList)
-        except Exception:  # noqa: BLE001
-            return
-        if idx >= len(posts_list.children):
-            return
-        # Markdown above renders over many frames, continually shifting the
-        # target's virtual_region downward. Pin target to the top of the viewport
-        # on every timer tick so the viewport follows those shifts visually.
-        # set_timer is used (not call_after_refresh) because it fires reliably
-        # even when no widget changes trigger a refresh.
-        item = posts_list.children[idx]
-        if item.virtual_region.height > 0:
-            posts_list.scroll_to_widget(item, animate=False, top=True)
-        if attempts < 90:
-            self.set_timer(
-                0.020,
-                lambda: self._restore_scroll_after_prepend(idx, attempts + 1),
-            )
-
-    def _insert_posts(self, posts: list[dict]) -> int:
-        """Insert posts into the list at correct post_number positions.
-
-        Returns the number of new items actually inserted (skips duplicates).
-        """
-        posts_list = self.query_one("#posts", PostsList)
-        sorted_posts = sorted(posts, key=lambda p: p.get("post_number") or 0)
-        # Build a by_number map covering both existing and incoming posts.
-        by_number: dict[int, dict] = {}
-        for item in posts_list.children:
-            if isinstance(item, PostItem):
-                pn = item.post.get("post_number")
-                if isinstance(pn, int):
-                    by_number[pn] = item.post
-        for p in sorted_posts:
-            pn = p.get("post_number")
-            if isinstance(pn, int):
-                by_number[pn] = p
-        existing_ordered = [c for c in posts_list.children if isinstance(c, PostItem)]
-        ei = 0
-        n_inserted = 0
-        for p in sorted_posts:
-            pid = p.get("id")
-            if isinstance(pid, int) and pid in self._loaded_ids:
-                continue
-            rpn = p.get("reply_to_post_number")
-            parent_user = None
-            if isinstance(rpn, int):
-                parent = by_number.get(rpn)
-                if parent:
-                    parent_user = parent.get("username")
-            raw = p.get("raw") or _strip_html(p.get("cooked", ""))
-            collapsed = len(raw.splitlines()) > _COLLAPSE_THRESHOLD
-            target_pn = p.get("post_number") or 0
-            while ei < len(existing_ordered):
-                cpn = existing_ordered[ei].post.get("post_number") or 0
-                if cpn > target_pn:
-                    break
-                ei += 1
-            item = PostItem(p, reply_to_username=parent_user, collapsed=collapsed)
-            try:
-                if ei < len(existing_ordered):
-                    posts_list.mount(item, before=existing_ordered[ei])
-                else:
-                    posts_list.append(item)
-            except Exception:  # noqa: BLE001
-                try:
-                    posts_list.append(item)
-                except Exception:  # noqa: BLE001
-                    continue
-            if isinstance(pid, int):
-                self._loaded_ids.add(pid)
-            existing_ordered.insert(ei, item)
-            ei += 1
-            n_inserted += 1
-        return n_inserted
-
-    # --- actions ---
     def action_back(self) -> None:
         self.app.pop_screen()
 
     def action_reload(self) -> None:
-        self._load()
-
-    def action_open_in_editor(self) -> None:
-        if not self._thread:
-            return
-        posts_list = self.query_one("#posts", PostsList)
-        title = self._thread.get("title") or self._thread.get("fancy_title") or ""
-        all_posts = [item.post for item in posts_list.children if isinstance(item, PostItem)]
-        sep = "\n\n---\n\n"
-        body = sep.join(_post_markdown(p) for p in all_posts)
-        content = f"# {title}\n\n{body}"
-        with self.app.suspend():
-            edit_markdown(content, read_only=True)
-        self.refresh()
-
-    def action_reply(self) -> None:
-        if not self._thread:
-            return
-        # If a post is highlighted, reply threads under it; otherwise reply to topic.
-        posts_list = self.query_one("#posts", PostsList)
-        item = posts_list.highlighted_child
-        reply_to_post_number: int | None = None
-        header_hint = ""
-        if isinstance(item, PostItem):
-            pn = item.post.get("post_number")
-            if isinstance(pn, int) and pn > 1:
-                reply_to_post_number = pn
-                who = item.post.get("username", "")
-                header_hint = f"<!-- replying to @{who} (post #{pn}); save & quit to send -->\n\n"
-        tmpl = header_hint or "<!-- write your reply in markdown; save & quit to post -->\n\n"
-        with self.app.suspend():
-            content = edit_markdown(tmpl)
-        self.refresh()
-        if not content:
-            return
-        body = _strip_template(content).strip()
-        if not body:
-            self.app.notify("Empty reply — not posted.", severity="warning")
-            return
-        self._submit_reply(body, reply_to_post_number)
-
-    def action_reply_topic(self) -> None:
-        if not self._thread:
-            return
-        tmpl = "<!-- reply to topic; save & quit to post -->\n\n"
-        with self.app.suspend():
-            content = edit_markdown(tmpl)
-        self.refresh()
-        if not content:
-            return
-        body = _strip_template(content).strip()
-        if not body:
-            self.app.notify("Empty reply — not posted.", severity="warning")
-            return
-        self._submit_reply(body, None)
-
-    def _highlighted_post(self) -> dict | None:
-        posts_list = self.query_one("#posts", PostsList)
-        item = posts_list.highlighted_child
-        if isinstance(item, PostItem):
-            return item.post
-        return None
-
-    def action_yank(self) -> None:
-        post = self._highlighted_post()
-        if not post:
-            self.app.notify("Select a post first.", severity="warning")
-            return
-        body = post.get("raw") or _strip_html(post.get("cooked", ""))
-        if _copy_to_clipboard(body):
-            self.app.notify("Post copied to clipboard.", severity="information")
-        else:
-            self.app.notify(
-                "No clipboard tool found (install termux-api / xclip / pbcopy).",
-                severity="warning",
-            )
+        cur = self.stream.current
+        self._load(cur.number if cur else None)
 
     def action_goto_top(self) -> None:
-        if self._stream and self._stream[0] in self._loaded_ids:
-            self._scroll_to_first_loaded()
-            return
-        if self._stream:
-            self._jump_to_top()
+        s = self.stream
+        if self._ids and s.entries and s.entries[0].id == self._ids[0]:
+            s.move_to(0, align="top")
         else:
-            self._scroll_to_first_loaded()
-
-    def _scroll_to_first_loaded(self) -> None:
-        posts_list = self.query_one("#posts", PostsList)
-        if posts_list.children:
-            posts_list.index = 0
-            self.call_after_refresh(self._do_initial_scroll, 0, 0)
-
-    @work(thread=True, exclusive=True, group="thread-top")
-    def _jump_to_top(self) -> None:
-        head_ids = self._stream[:20]
-        to_fetch = [pid for pid in head_ids if pid not in self._loaded_ids]
-        posts: list[dict] = []
-        if to_fetch:
-            try:
-                posts = self.app.client.thread_fill_missing(self._topic_id, to_fetch)
-            except Exception:  # noqa: BLE001
-                pass
-        if posts:
-            self.app.call_from_thread(self._insert_posts, posts)
-        self.app.call_from_thread(self._scroll_to_first_loaded)
+            self._load(1)
 
     def action_goto_bottom(self) -> None:
-        # If the last post in the full stream is already loaded, jump to it.
-        if self._stream and self._stream[-1] in self._loaded_ids:
-            self._scroll_to_last_loaded()
-            return
-        # Otherwise fetch the tail of the stream first.
-        if self._stream:
-            self._jump_to_bottom()
+        s = self.stream
+        if self._ids and s.entries and s.entries[-1].id == self._ids[-1]:
+            s.move_to(len(s.entries) - 1, align="top")
         else:
-            self._scroll_to_last_loaded()
-
-    def _scroll_to_last_loaded(self) -> None:
-        posts_list = self.query_one("#posts", PostsList)
-        n = len(posts_list.children)
-        if n:
-            posts_list.index = n - 1
-            self.call_after_refresh(self._do_initial_scroll, n - 1, 0)
-
-    @work(thread=True, exclusive=True, group="thread-bottom")
-    def _jump_to_bottom(self) -> None:
-        tail_ids = self._stream[-20:]
-        to_fetch = [pid for pid in tail_ids if pid not in self._loaded_ids]
-        posts: list[dict] = []
-        if to_fetch:
-            try:
-                posts = self.app.client.thread_fill_missing(self._topic_id, to_fetch)
-            except Exception:  # noqa: BLE001
-                pass
-        if posts:
-            self.app.call_from_thread(self._insert_posts, posts)
-        self.app.call_from_thread(self._scroll_to_last_loaded)
-
-    def action_toggle_collapse(self) -> None:
-        posts_list = self.query_one("#posts", PostsList)
-        item = posts_list.highlighted_child
-        if isinstance(item, PostItem):
-            item.toggle_collapse()
+            self._load(self._data.get("highest_post_number") or 10**6)
 
     def action_jump_to_parent(self) -> None:
-        post = self._highlighted_post()
-        if not post:
-            self.app.notify("Select a post first.", severity="warning")
+        e = self._current()
+        if e is None:
             return
-        rpn = post.get("reply_to_post_number")
-        if not isinstance(rpn, int) or rpn <= 0:
-            self.app.notify("This post isn't a reply.", severity="information")
+        rpn = e.post.get("reply_to_post_number")
+        if not rpn:
+            self.app.notify("This post isn't a reply.")
             return
-        posts_list = self.query_one("#posts", PostsList)
-        for i, child in enumerate(posts_list.children):
-            if isinstance(child, PostItem) and child.post.get("post_number") == rpn:
-                posts_list.index = i
-                child.scroll_visible()
-                return
-        self.app.notify(f"Post #{rpn} isn't loaded in this view.", severity="warning")
+        self.jump_to(rpn)
 
-    def action_show_reactors(self) -> None:
-        post = self._highlighted_post()
-        if not post:
-            self.app.notify("Select a post first.", severity="warning")
-            return
-        pid = post.get("id")
-        if not isinstance(pid, int):
-            return
-        self._fetch_reactors(pid, post)
-
-    @work(thread=True, exclusive=True, group="reactors")
-    def _fetch_reactors(self, post_id: int, post: dict) -> None:
-        groups = self.app.client.all_reaction_users(post_id)
-        if not groups:
-            for a in post.get("actions_summary") or []:
-                if a.get("id") == 2 and a.get("count"):
-                    users = self.app.client.post_action_users(post_id, 2)
-                    if users:
-                        groups.append(("+1", users))
-                    break
-        self.app.call_from_thread(self._open_reactors_modal, groups)
-
-    def _open_reactors_modal(self, groups: list[tuple[str, list[str]]]) -> None:
-        if not groups:
-            self.app.notify("No reactions on this post.", severity="information")
-            return
-        self.app.push_screen(ReactorsModal(groups))
-
-    def action_copy_menu(self) -> None:
-        post = self._highlighted_post()
-        if not post:
-            self.app.notify("Select a post first.", severity="warning")
-            return
-        raw = post.get("raw") or _strip_html(post.get("cooked", ""))
-        blocks = _code_blocks(raw)
-        if not blocks:
-            self._copy_post_link(post)
-            return
-
-        def _done(choice: tuple[str, int] | None) -> None:
-            if not choice:
-                return
-            kind, idx = choice
-            if kind == "link":
-                self._copy_post_link(post)
-            elif kind == "code" and 0 <= idx < len(blocks):
-                if _copy_to_clipboard(blocks[idx]):
-                    self.app.notify(
-                        f"Code block #{idx + 1} copied.", severity="information"
-                    )
-                else:
-                    self.app.notify(
-                        "No clipboard tool found.", severity="warning"
-                    )
-
-        self.app.push_screen(CopyMenuModal(blocks), _done)
-
-    def _copy_post_link(self, post: dict) -> None:
-        base = (self.app.client.base_url or "").rstrip("/")
-        slug = (self._thread or {}).get("slug") or self._topic.get("slug") or ""
-        tid = self._topic_id
-        pn = post.get("post_number") or 1
-        if slug:
-            url = f"{base}/t/{slug}/{tid}/{pn}"
+    def jump_to(self, number: int) -> None:
+        idx = self.stream.index_of_number(number)
+        if idx is not None:
+            self.stream.move_to(idx, align="top")
         else:
-            url = f"{base}/t/{tid}/{pn}"
-        if _copy_to_clipboard(url):
-            self.app.notify(f"Copied: {url}", severity="information")
+            self._load(number)
+
+    def action_toggle_collapse(self) -> None:
+        e = self._current()
+        if e is not None and not e.is_small:
+            e.collapsed = not e.collapsed
+            self.stream.refresh_entry(e)
+
+    def action_toggle_spoilers(self) -> None:
+        e = self._current()
+        if e is None:
+            return
+        r = e.rendered
+        if r is not None and not (r.has_spoiler or r.has_details):
+            self.app.notify("No spoilers or collapsed sections in this post.")
+            return
+        e.reveal = not e.reveal
+        e.expand = e.reveal
+        self.stream.refresh_entry(e)
+
+    # --- helpers ---
+
+    def _current(self, warn: bool = True) -> Entry | None:
+        e = self.stream.current if self._data else None
+        if e is None and warn:
+            self.app.notify("Select a post first.", severity="warning")
+        return e
+
+    def _post_url(self, number: int = 1) -> str:
+        base = self.app.client.base_url
+        slug = self._data.get("slug") or self._topic.get("slug") or "-"
+        return f"{base}/t/{slug}/{self._tid}/{number}"
+
+    # --- composing ---
+
+    def _compose_and_send(self, template: str, reply_to: int | None, *, key: str) -> None:
+        unsent = getattr(self.app, "unsent", {})
+        self.app.unsent = unsent
+        prev = unsent.pop(key, None)
+        with self.app.suspend():
+            content = edit_markdown(prev or template)
+        if content is None:
+            return
+        body = strip_template(content).strip()
+        if not body:
+            self.app.notify("Empty reply, not posted.", severity="warning")
+            return
+        self._submit_reply(body, reply_to, key)
+
+    def action_reply(self) -> None:
+        if not self._data:
+            return
+        e = self._current(warn=False)
+        reply_to = e.number if e is not None and e.number > 1 and not e.is_small else None
+        if reply_to:
+            hint = f"<!-- replying to @{e.post.get('username', '')} (post #{reply_to}); save & quit to send -->\n\n"
         else:
-            self.app.notify(
-                "No clipboard tool found (install termux-api / xclip / pbcopy).",
-                severity="warning",
-            )
+            hint = "<!-- reply to the topic; save & quit to send -->\n\n"
+        self._compose_and_send(hint, reply_to, key=f"{self._tid}:{reply_to}")
+
+    def action_reply_topic(self) -> None:
+        if not self._data:
+            return
+        self._compose_and_send(
+            "<!-- reply to the topic; save & quit to send -->\n\n", None, key=f"{self._tid}:None"
+        )
 
     def action_quote_reply(self) -> None:
-        if not self._thread:
+        e = self._current()
+        if e is None:
             return
-        post = self._highlighted_post()
-        if not post:
-            self.app.notify("Select a post first.", severity="warning")
+        self._quote_worker(e.post)
+
+    @work(thread=True, group="raw")
+    def _quote_worker(self, post: dict) -> None:
+        try:
+            raw = self.app.client.post_raw(int(post["id"]))
+        except ApiError as e:
+            self.app.call_from_thread(self.app.report_error, e, "Quote")
             return
-        pn = post.get("post_number")
+        self.app.call_from_thread(self._open_quote, post, raw)
+
+    def _open_quote(self, post: dict, raw: str) -> None:
         user = post.get("username", "")
-        body = post.get("raw") or _strip_html(post.get("cooked", ""))
-        tid = post.get("topic_id") or self._topic_id
-        quote_block = f'[quote="{user}, post:{pn}, topic:{tid}"]\n{body.strip()}\n[/quote]\n\n'
-        tmpl = f"<!-- quoting @{user} (post #{pn}); save & quit to post -->\n\n{quote_block}"
-        with self.app.suspend():
-            content = edit_markdown(tmpl)
-        self.refresh()
-        if not content:
-            return
-        stripped = _strip_template(content).strip()
-        if not stripped:
-            self.app.notify("Empty reply — not posted.", severity="warning")
-            return
-        reply_to = pn if isinstance(pn, int) and pn > 1 else None
-        self._submit_reply(stripped, reply_to)
-
-    # --- profile / edit / delete / auto / upload ---
-    def action_user_profile(self) -> None:
-        post = self._highlighted_post()
-        if not post:
-            self.app.notify("Select a post first.", severity="warning")
-            return
-        username = post.get("username")
-        if not username:
-            return
-        self.app.push_screen(UserProfileScreen(username))
-
-    def action_edit_post(self) -> None:
-        post = self._highlighted_post()
-        if not post:
-            self.app.notify("Select a post first.", severity="warning")
-            return
-        current = self.app.client._username or self.app.cfg.username or ""
-        if not current or post.get("username") != current:
-            self.app.notify("You can only edit your own posts.", severity="warning")
-            return
-        raw = post.get("raw") or self.app.client.post_raw(int(post.get("id") or 0))
-        if not raw:
-            raw = _strip_html(post.get("cooked", ""))
-        tmpl = (
-            f"<!-- editing your post #{post.get('post_number')}; "
-            f"save & quit to update -->\n\n{raw}"
-        )
-        with self.app.suspend():
-            content = edit_markdown(tmpl)
-        self.refresh()
-        if not content:
-            return
-        stripped = _strip_template(content).strip()
-        if not stripped:
-            self.app.notify("Empty content — not updated.", severity="warning")
-            return
-        pid = post.get("id")
-        if isinstance(pid, int):
-            self._submit_edit(pid, stripped)
-
-    @work(thread=True, exclusive=True, group="post")
-    def _submit_edit(self, post_id: int, body: str) -> None:
-        try:
-            self.app.client.edit_post(post_id, body)
-        except Unauthorized:
-            self.app.call_from_thread(self.app.reauth)
-            return
-        except Exception as e:  # noqa: BLE001
-            self.app.call_from_thread(
-                self.app.notify, f"Edit failed: {e}", severity="error"
-            )
-            return
-        self.app.call_from_thread(self.app.notify, "Post updated.", severity="information")
-        self.app.call_from_thread(self._refresh_in_place)
-
-    def action_delete_post(self) -> None:
-        post = self._highlighted_post()
-        if not post:
-            self.app.notify("Select a post first.", severity="warning")
-            return
-        current = self.app.client._username or self.app.cfg.username or ""
-        if not current or post.get("username") != current:
-            self.app.notify("You can only delete your own posts.", severity="warning")
-            return
-        pid = post.get("id")
         pn = post.get("post_number")
-        if not isinstance(pid, int):
-            return
+        block = f'[quote="{user}, post:{pn}, topic:{self._tid}"]\n{raw.strip()}\n[/quote]\n\n'
+        hint = f"<!-- quoting @{user} (post #{pn}); save & quit to send -->\n\n"
+        reply_to = pn if isinstance(pn, int) and pn > 1 else None
+        self._compose_and_send(hint + block, reply_to, key=f"{self._tid}:q{pn}")
 
-        def _confirm(ok: bool | None) -> None:
-            if ok:
-                self._submit_delete(pid)
-
-        self.app.push_screen(ConfirmModal(f"Delete your post #{pn}?"), _confirm)
-
-    @work(thread=True, exclusive=True, group="post")
-    def _submit_delete(self, post_id: int) -> None:
+    @work(thread=True, group="post")
+    def _submit_reply(self, body: str, reply_to: int | None, key: str) -> None:
         try:
-            self.app.client.delete_post(post_id)
-        except Unauthorized:
-            self.app.call_from_thread(self.app.reauth)
-            return
-        except Exception as e:  # noqa: BLE001
+            post = self.app.client.reply(self._tid, body, reply_to)
+        except ApiError as e:
+            self.app.unsent[key] = body
             self.app.call_from_thread(
-                self.app.notify, f"Delete failed: {e}", severity="error"
+                self.app.notify,
+                f"Reply failed: {e}. Your text is kept; reply again to reopen it.",
+                severity="error",
+                timeout=10,
             )
             return
-        self.app.call_from_thread(self.app.notify, "Post deleted.", severity="information")
-        self.app.call_from_thread(self._refresh_in_place)
+        self.app.call_from_thread(self._replied, post)
 
-    def action_open_url(self) -> None:
-        post = self._highlighted_post()
-        base = (self.app.client.base_url or "").rstrip("/")
-        slug = (self._thread or {}).get("slug") or self._topic.get("slug") or ""
-        tid = self._topic_id
-        pn = post.get("post_number") or 1 if post else 1
-        url = f"{base}/t/{slug}/{tid}/{pn}" if slug else f"{base}/t/{tid}/{pn}"
-        for cmd in (["termux-open-url", url], ["xdg-open", url], ["open", url]):
-            if shutil.which(cmd[0]):
-                try:
-                    subprocess.Popen(cmd)
-                    return
-                except Exception:  # noqa: BLE001
-                    continue
-        import webbrowser
-        webbrowser.open(url)
+    def _replied(self, post: dict) -> None:
+        self.app.notify("Reply posted.")
+        pid = post.get("id")
+        if isinstance(pid, int) and pid not in self._ids:
+            self._ids.append(pid)
+        s = self.stream
+        if s.entries and self._ids and len(self._ids) >= 2 and s.entries[-1].id == self._ids[-2]:
+            s.add_posts([post])
+            self._update_edges()
+            s.move_to(len(s.entries) - 1)
+        else:
+            self._load(post.get("post_number"))
 
-    def action_toggle_auto_refresh(self) -> None:
-        if self._auto_refresh is not None:
-            self._auto_refresh.stop()
-            self._auto_refresh = None
-            self.app.notify("Auto-refresh off.", severity="information")
-            return
-        self._auto_refresh = self.set_interval(30.0, self._poll_new_posts)
-        self.app.notify("Auto-refresh on (30s).", severity="information")
+    # --- copy / open ---
 
-    def _poll_new_posts(self) -> None:
-        # Compute near_post on the main thread so the worker can target the tail
-        # of our loaded range — otherwise thread() returns the first chunk and
-        # the merge logic sees those as "new" posts to insert.
-        max_pn = 0
+    def action_yank(self) -> None:
+        e = self._current()
+        if e is not None:
+            self._yank_worker(int(e.id))
+
+    @work(thread=True, group="raw")
+    def _yank_worker(self, post_id: int) -> None:
         try:
-            posts_list = self.query_one("#posts", PostsList)
-            for item in posts_list.children:
-                if isinstance(item, PostItem):
-                    pn = item.post.get("post_number")
-                    if isinstance(pn, int) and pn > max_pn:
-                        max_pn = pn
-        except Exception:  # noqa: BLE001
-            pass
-        self._poll_new_posts_worker(max_pn if max_pn > 1 else None)
-
-    @work(thread=True, exclusive=True, group="poll")
-    def _poll_new_posts_worker(self, near_post: int | None) -> None:
-        try:
-            fresh = self.app.client.thread(self._topic_id, near_post=near_post)
-        except Exception:  # noqa: BLE001
+            raw = self.app.client.post_raw(post_id)
+        except ApiError as e:
+            self.app.call_from_thread(self.app.report_error, e, "Copy")
             return
-        self.app.call_from_thread(self._merge_new_posts, fresh)
-
-    def _merge_new_posts(self, fresh: dict, *, notify: bool = True) -> None:
-        """Merge a fresh thread response into the current list without scrolling.
-
-        Inserts new posts at their correct ``post_number`` position and updates
-        edited ones in place. Only removes a post if its id is absent from the
-        server's full stream (meaning it was truly deleted); posts that are
-        simply not in this partial response are left alone.
-        """
-        # Full set of post_ids the server knows about (the whole stream).
-        fresh_stream_set: set[int] = set(
-            pid for pid in ((fresh.get("post_stream") or {}).get("stream") or [])
-            if isinstance(pid, int)
-        )
-        if fresh_stream_set:
-            self._stream = [
-                pid for pid in ((fresh.get("post_stream") or {}).get("stream") or [])
-                if isinstance(pid, int)
-            ]
-        posts_list = self.query_one("#posts", PostsList)
-        existing: dict[int, PostItem] = {}
-        max_pn_loaded = 0
-        for item in posts_list.children:
-            if isinstance(item, PostItem):
-                pid = item.post.get("id")
-                if isinstance(pid, int):
-                    existing[pid] = item
-                pn = item.post.get("post_number")
-                if isinstance(pn, int) and pn > max_pn_loaded:
-                    max_pn_loaded = pn
-        fresh_posts = ((fresh.get("post_stream") or {}).get("posts") or [])
-        by_number: dict[int, dict] = {}
-        for p in fresh_posts:
-            pn = p.get("post_number")
-            if isinstance(pn, int):
-                by_number[pn] = p
-        fresh_ids: set[int] = set()
-        to_insert: list[tuple[int, PostItem]] = []
-        updated = 0
-        for p in fresh_posts:
-            pid = p.get("id")
-            if not isinstance(pid, int):
-                continue
-            fresh_ids.add(pid)
-            rpn = p.get("reply_to_post_number")
-            parent_user = None
-            if isinstance(rpn, int):
-                parent = by_number.get(rpn)
-                if parent:
-                    parent_user = parent.get("username")
-            if pid in existing:
-                item = existing[pid]
-                if (
-                    p.get("updated_at") != item.post.get("updated_at")
-                    or p.get("cooked") != item.post.get("cooked")
-                    or p.get("raw") != item.post.get("raw")
-                ):
-                    item.post = p
-                    item.reply_to_username = parent_user
-                    item.refresh_body()
-                    updated += 1
-                else:
-                    item.post = p
-                    item.reply_to_username = parent_user
-            else:
-                pn = p.get("post_number")
-                # Only insert posts that come after the current tail. Otherwise a
-                # refresh that returns a different chunk (e.g., the top of the
-                # thread) would spuriously insert old posts the user hasn't
-                # scrolled to yet.
-                if not isinstance(pn, int) or pn <= max_pn_loaded:
-                    continue
-                raw = p.get("raw") or _strip_html(p.get("cooked", ""))
-                collapsed = len(raw.splitlines()) > _COLLAPSE_THRESHOLD
-                new_item = PostItem(
-                    p, reply_to_username=parent_user, collapsed=collapsed
-                )
-                to_insert.append((pn, new_item))
-        appended = 0
-        if to_insert:
-            to_insert.sort(key=lambda t: t[0])
-            existing_ordered = [
-                c for c in posts_list.children if isinstance(c, PostItem)
-            ]
-            ei = 0
-            for target_pn, new_item in to_insert:
-                while ei < len(existing_ordered):
-                    cpn = existing_ordered[ei].post.get("post_number") or 0
-                    if cpn > target_pn:
-                        break
-                    ei += 1
-                try:
-                    if ei < len(existing_ordered):
-                        posts_list.mount(new_item, before=existing_ordered[ei])
-                    else:
-                        posts_list.append(new_item)
-                except Exception:  # noqa: BLE001
-                    try:
-                        posts_list.append(new_item)
-                    except Exception:  # noqa: BLE001
-                        continue
-                pid_new = new_item.post.get("id")
-                if isinstance(pid_new, int):
-                    self._loaded_ids.add(pid_new)
-                appended += 1
-        removed = 0
-        for pid, item in list(existing.items()):
-            # Only remove if the post is gone from the server stream entirely.
-            if pid not in fresh_ids and pid not in fresh_stream_set:
-                try:
-                    item.remove()
-                except Exception:  # noqa: BLE001
-                    continue
-                self._loaded_ids.discard(pid)
-                removed += 1
-        self._thread = fresh
-        if notify and (appended or updated or removed):
-            parts: list[str] = []
-            if appended:
-                parts.append(f"+{appended}")
-            if updated:
-                parts.append(f"~{updated}")
-            if removed:
-                parts.append(f"-{removed}")
-            self.app.notify(f"Thread updated ({' '.join(parts)}).", severity="information")
-
-    @work(thread=True, exclusive=True, group="thread")
-    def _refresh_in_place(self) -> None:
-        """Refresh the thread without clearing the list or scrolling."""
-        try:
-            fresh = self.app.client.thread(self._topic_id)
-        except Unauthorized:
-            self.app.call_from_thread(self.app.reauth)
-            return
-        except Exception as e:  # noqa: BLE001
-            self.app.call_from_thread(
-                self.app.notify, f"Refresh failed: {e}", severity="error"
-            )
-            return
-        self.app.call_from_thread(self._merge_new_posts, fresh, notify=False)
-
-    def action_upload(self) -> None:
-        def _done(path: str | None) -> None:
-            if path:
-                self._do_upload(path)
-        self.app.push_screen(FilePickerModal("Upload to forum"), _done)
-
-    @work(thread=True, exclusive=True, group="upload")
-    def _do_upload(self, path: str) -> None:
-        import os
-        expanded = os.path.expanduser(path)
-        if not os.path.isfile(expanded):
-            self.app.call_from_thread(
-                self.app.notify, f"No such file: {expanded}", severity="error"
-            )
-            return
-        try:
-            result = self.app.client.upload(expanded)
-        except Unauthorized:
-            self.app.call_from_thread(self.app.reauth)
-            return
-        except Exception as e:  # noqa: BLE001
-            self.app.call_from_thread(
-                self.app.notify, f"Upload failed: {e}", severity="error"
-            )
-            return
-        url = result.get("short_url") or result.get("url") or ""
-        name = result.get("original_filename") or os.path.basename(expanded)
-        is_image = (result.get("extension") or "").lower() in (
-            "png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"
-        )
-        md = f"![{name}]({url})" if is_image else f"[{name}]({url})"
-        _copy_to_clipboard(md)
+        ok = copy_to_clipboard(raw)
         self.app.call_from_thread(
             self.app.notify,
-            f"Uploaded. Markdown copied: {md}",
-            severity="information",
+            "Post markdown copied." if ok else "No clipboard tool found.",
+            severity="information" if ok else "warning",
         )
 
-    @work(thread=True, exclusive=True, group="post")
-    def _submit_reply(self, body: str, reply_to_post_number: int | None) -> None:
-        try:
-            self.app.client.reply(self._topic_id, body, reply_to_post_number)
-        except Unauthorized:
-            self.app.call_from_thread(self.app.reauth)
+    def action_copy_menu(self) -> None:
+        e = self._current()
+        if e is None:
             return
-        except Exception as e:  # noqa: BLE001
-            self.app.call_from_thread(
-                self.app.notify, f"Reply failed: {e}", severity="error"
-            )
+        url = self._post_url(e.number)
+        r = e.rendered
+        blocks = r.code_blocks if r else []
+        links = r.links if r else []
+        if not blocks and not links:
+            self._copy(url, f"Copied: {url}")
             return
-        self.app.call_from_thread(self.app.notify, "Reply posted.", severity="information")
-        self.app.call_from_thread(self._refresh_after_reply)
 
-    def _refresh_after_reply(self) -> None:
-        """After posting a reply: update stream, load the new post, jump to end."""
-        self._do_post_reply_refresh()
+        def done(choice: tuple[str, int] | None) -> None:
+            if not choice:
+                return
+            kind, i = choice
+            if kind == "link":
+                self._copy(url, f"Copied: {url}")
+            elif kind == "code" and 0 <= i < len(blocks):
+                self._copy(blocks[i], f"Code block {i + 1} copied.")
+            elif kind == "url" and 0 <= i < len(links):
+                self._copy(links[i][1], f"Copied: {links[i][1]}")
 
-    @work(thread=True, exclusive=True, group="post-reply-refresh")
-    def _do_post_reply_refresh(self) -> None:
-        try:
-            fresh = self.app.client.thread(self._topic_id)
-        except Exception:  # noqa: BLE001
+        self.app.push_screen(CopyMenuModal(blocks, links), done)
+
+    def _copy(self, text: str, msg: str) -> None:
+        if copy_to_clipboard(text):
+            self.app.notify(msg)
+        else:
+            self.app.notify("No clipboard tool found.", severity="warning")
+
+    def action_open_url(self) -> None:
+        e = self._current(warn=False)
+        self.app.open_url(self._post_url(e.number if e else 1))
+
+    def action_open_in_editor(self) -> None:
+        s = self.stream
+        if not s.entries:
             return
-        # Get new stream so we can detect and fetch the reply we just posted.
-        new_stream = [
-            pid for pid in ((fresh.get("post_stream") or {}).get("stream") or [])
-            if isinstance(pid, int)
-        ]
-        extra_posts: list[dict] = []
-        if new_stream:
-            loaded_set = set(self._loaded_ids)
-            last_pos = -1
-            for i, pid in enumerate(new_stream):
-                if pid in loaded_set:
-                    last_pos = i
-            if last_pos < len(new_stream) - 1:
-                ids = [
-                    pid for pid in new_stream[last_pos + 1: last_pos + 21]
-                    if pid not in loaded_set
-                ]
-                if ids:
-                    try:
-                        extra_posts = self.app.client.thread_fill_missing(
-                            self._topic_id, ids
-                        )
-                    except Exception:  # noqa: BLE001
-                        pass
-        self.app.call_from_thread(self._apply_post_reply_refresh, fresh, extra_posts)
+        con = Console(width=100, record=True, file=io.StringIO(), color_system=None)
+        con.print(f"# {self._data.get('title', '')}\n")
+        for e in s.entries:
+            p = e.post
+            con.print(f"--- @{p.get('username')} · #{e.number} · {p.get('created_at', '')[:16]}")
+            if e.rendered is not None:
+                con.print(e.rendered.body)
+            con.print()
+        with self.app.suspend():
+            edit_markdown(con.export_text(), read_only=True)
 
-    def _apply_post_reply_refresh(self, fresh: dict, extra_posts: list[dict]) -> None:
-        self._merge_new_posts(fresh, notify=False)
-        if extra_posts:
-            self._insert_posts(extra_posts)
-        def _tail() -> None:
-            try:
-                ps = self.query_one("#posts", PostsList)
-                if len(ps.children):
-                    ps.index = len(ps.children) - 1
-            except Exception:  # noqa: BLE001
-                pass
-        self.call_after_refresh(_tail)
+    # --- people / reactions ---
 
-    # --- reactions ---
-    _FORUM_REACTIONS = ["ok_hand", "man_shrugging", "+1", "folded_hands", "laughing"]
+    def action_user_profile(self) -> None:
+        e = self._current()
+        if e is not None and e.post.get("username"):
+            self.app.push_screen(UserProfileScreen(e.post["username"]))
 
     def action_react(self) -> None:
-        post_id = self._highlighted_post_id()
-        if not post_id:
-            self.app.notify("Select a post first.", severity="warning")
+        e = self._current()
+        if e is None or e.is_small:
             return
-        self._open_react_modal(post_id)
+        mine = e.post.get("current_user_reaction") or {}
+        mine_id = mine.get("id") if isinstance(mine, dict) else None
+        site = self.app.site
 
-    def _open_react_modal(self, post_id: int) -> None:
-        self._show_react_modal(post_id, self._FORUM_REACTIONS)
+        def done(rid: str | None) -> None:
+            if rid:
+                self._toggle_reaction(e.id, rid)
 
-    def _show_react_modal(self, post_id: int, supported: list[str]) -> None:
-        def _done(reaction: str | None) -> None:
-            if reaction:
-                self._toggle_reaction(post_id, reaction)
+        self.app.push_screen(ReactionModal(site.reactions, site.emoji, mine_id), done)
 
-        self.app.push_screen(ReactionModal(supported_ids=supported), _done)
-
-    @on(ListView.Selected, "#posts")
-    def _on_post_selected(self, event: ListView.Selected) -> None:
-        # Enter on a post opens the reaction picker.
-        self.action_react()
-
-    def _highlighted_post_id(self) -> int | None:
-        if not self._thread:
-            return None
-        posts_list = self.query_one("#posts", PostsList)
-        item = posts_list.highlighted_child
-        if isinstance(item, PostItem):
-            pid = item.post.get("id")
-            try:
-                return int(pid) if pid is not None else None
-            except (TypeError, ValueError):
-                return None
-        return None
-
-    @work(thread=True, exclusive=True, group="react")
-    def _toggle_reaction(self, post_id: int, reaction_id: str) -> None:
+    @work(thread=True, group="react")
+    def _toggle_reaction(self, post_id: int, reaction: str) -> None:
+        client = self.app.client
         try:
-            self.app.client.toggle_reaction(post_id, reaction_id)
-        except Unauthorized:
-            self.app.call_from_thread(self.app.reauth)
+            res = client.toggle_reaction(post_id, reaction)
+            if not (isinstance(res, dict) and "reactions" in res):
+                fresh = client.posts_by_ids(self._tid, [post_id])
+                res = fresh[0] if fresh else {}
+        except ApiError as e:
+            self.app.call_from_thread(self.app.report_error, e, "Reaction")
             return
-        except Exception as e:  # noqa: BLE001
-            self.app.call_from_thread(
-                self.app.notify, f"Reaction failed: {e}", severity="error"
-            )
+        self.app.call_from_thread(self._apply_post_fields, post_id, res)
+
+    def _apply_post_fields(self, post_id: int, fields: dict) -> None:
+        for e in self.stream.entries:
+            if e.id == post_id:
+                keep = (
+                    "reactions", "current_user_reaction", "reaction_users_count",
+                    "current_user_used_main_reaction", "actions_summary",
+                )
+                updated = dict(e.post)
+                for k in keep:
+                    if k in fields:
+                        updated[k] = fields[k]
+                self.stream.update_post(updated)
+                return
+
+    def action_show_reactors(self) -> None:
+        e = self._current()
+        if e is not None:
+            self._reactors_worker(e.id)
+
+    @work(thread=True, exclusive=True, group="reactors")
+    def _reactors_worker(self, post_id: int) -> None:
+        try:
+            groups = self.app.client.reaction_users(post_id)
+        except ApiError:
+            groups = []
+        if not groups:
+            try:
+                users = self.app.client.like_users(post_id)
+            except ApiError:
+                users = []
+            if users:
+                groups = [("+1", users)]
+        self.app.call_from_thread(self._show_reactors, groups)
+
+    def _show_reactors(self, groups: list[tuple[str, list[str]]]) -> None:
+        if not groups:
+            self.app.notify("No reactions on this post.")
             return
-        self.app.call_from_thread(self._apply_reaction_locally, post_id, reaction_id)
-        self.app.call_from_thread(
-            self.app.notify, f"Toggled {reaction_id}.", severity="information"
-        )
+        self.app.push_screen(ReactorsModal(groups, self.app.site.emoji))
 
-    def _apply_reaction_locally(self, post_id: int, reaction_id: str) -> None:
-        """Optimistically update the in-memory post so the count changes without a reload."""
-        posts_list = self.query_one("#posts", PostsList)
-        for item in posts_list.children:
-            if not isinstance(item, PostItem):
-                continue
-            if item.post.get("id") != post_id:
-                continue
-            post = item.post
-            if reaction_id in ("+1", "heart", "like", "thumbsup", "thumbs_up"):
-                actions = list(post.get("actions_summary") or [])
-                entry = next((a for a in actions if a.get("id") == 2), None)
-                if entry is None:
-                    actions.append({"id": 2, "count": 1, "can_act": False})
-                else:
-                    current = entry.get("count") or 0
-                    if entry.get("can_act", True):
-                        entry["count"] = current + 1
-                        entry["can_act"] = False
-                    else:
-                        entry["count"] = max(0, current - 1)
-                        entry["can_act"] = True
-                post["actions_summary"] = actions
-            else:
-                reactions = list(post.get("reactions") or [])
-                entry = next((r for r in reactions if r.get("id") == reaction_id), None)
-                if entry is None:
-                    reactions.append({"id": reaction_id, "count": 1})
-                else:
-                    entry["count"] = (entry.get("count") or 0) + 1
-                post["reactions"] = reactions
-            item.refresh_body()
-            break
+    # --- edit / delete ---
+
+    def action_edit_post(self) -> None:
+        e = self._current()
+        if e is None:
+            return
+        if not e.post.get("can_edit"):
+            self.app.notify("You can't edit this post.", severity="warning")
+            return
+        self._edit_worker(e.post)
+
+    @work(thread=True, group="raw")
+    def _edit_worker(self, post: dict) -> None:
+        try:
+            raw = self.app.client.post_raw(int(post["id"]))
+        except ApiError as e:
+            self.app.call_from_thread(self.app.report_error, e, "Edit")
+            return
+        self.app.call_from_thread(self._open_edit, post, raw)
+
+    def _open_edit(self, post: dict, raw: str) -> None:
+        mine = post.get("username") == (self.app.site.username or self.app.cfg.username)
+        who = "your post" if mine else f"@{post.get('username')}'s post"
+        hint = f"<!-- editing {who} #{post.get('post_number')}; save & quit to update -->\n"
+        if not mine:
+            hint += "<!-- edit reason (optional): put it on the next line after 'reason:' -->\nreason: \n"
+        with self.app.suspend():
+            content = edit_markdown(hint + "\n" + raw)
+        if content is None:
+            return
+        body = strip_template(content)
+        reason = ""
+        lines = body.splitlines()
+        if lines and lines[0].startswith("reason:"):
+            reason = lines[0][7:].strip()
+            body = "\n".join(lines[1:])
+        body = body.strip()
+        if not body:
+            self.app.notify("Empty content, not updated.", severity="warning")
+            return
+        if body == raw.strip():
+            self.app.notify("No changes.")
+            return
+        self._submit_edit(int(post["id"]), body, reason)
+
+    @work(thread=True, group="post")
+    def _submit_edit(self, post_id: int, body: str, reason: str) -> None:
+        try:
+            res = self.app.client.edit_post(post_id, body, reason)
+        except ApiError as e:
+            self.app.call_from_thread(self.app.report_error, e, "Edit")
+            return
+        post = res.get("post") if isinstance(res, dict) else None
+        self.app.call_from_thread(self.app.notify, "Post updated.")
+        if post:
+            self.app.call_from_thread(self._apply_full_post, post)
+
+    def _apply_full_post(self, post: dict) -> None:
+        for e in self.stream.entries:
+            if e.id == post.get("id"):
+                self.stream.update_post({**e.post, **post})
+                return
+
+    def action_delete_post(self) -> None:
+        e = self._current()
+        if e is None:
+            return
+        if not e.post.get("can_delete"):
+            self.app.notify("You can't delete this post.", severity="warning")
+            return
+        mine = e.post.get("username") == (self.app.site.username or self.app.cfg.username)
+        what = f"your post #{e.number}" if mine else f"@{e.post.get('username')}'s post #{e.number}"
+
+        def done(ok: bool | None) -> None:
+            if ok:
+                self._delete_worker(e.id)
+
+        self.app.push_screen(ConfirmModal(f"Delete {what}?"), done)
+
+    @work(thread=True, group="post")
+    def _delete_worker(self, post_id: int) -> None:
+        try:
+            self.app.client.delete_post(post_id)
+        except ApiError as e:
+            self.app.call_from_thread(self.app.report_error, e, "Delete")
+            return
+        self.app.call_from_thread(self.app.notify, "Post deleted.")
+        self.app.call_from_thread(self._poll)
+
+    # --- live refresh ---
+
+    def action_toggle_auto_refresh(self) -> None:
+        if self._auto is not None:
+            self._auto.stop()
+            self._auto = None
+            self.app.notify("Auto-refresh off.")
+        else:
+            self._auto = self.set_interval(POLL_SECONDS, self._poll)
+            self.app.notify(f"Auto-refresh on ({int(POLL_SECONDS)}s).")
+
+    def _poll(self) -> None:
+        s = self.stream
+        if not self._data or not s.entries:
+            return
+        self._poll_worker(s.entries[-1].number)
+
+    @work(thread=True, exclusive=True, group="poll")
+    def _poll_worker(self, near: int) -> None:
+        try:
+            fresh = self.app.client.topic(self._tid, near_post=near)
+        except ApiError:
+            return
+        self.app.call_from_thread(self._merge, fresh)
+
+    def _merge(self, fresh: dict) -> None:
+        s = self.stream
+        ps = fresh.get("post_stream") or {}
+        new_ids = [i for i in ps.get("stream") or [] if isinstance(i, int)]
+        if not new_ids:
+            return
+        was_at_end = bool(s.entries) and bool(self._ids) and s.entries[-1].id == self._ids[-1]
+        old_ids = set(self._ids)
+        self._ids = new_ids
+        keep = set(new_ids)
+        gone = {e.id for e in s.entries if e.id not in keep}
+        s.remove_ids(gone)
+        by_id = {e.id: e for e in s.entries}
+        changed = 0
+        added: list[dict] = []
+        for p in ps.get("posts") or []:
+            pid = p.get("id")
+            e = by_id.get(pid)
+            if e is not None:
+                if (
+                    p.get("updated_at") != e.post.get("updated_at")
+                    or p.get("reactions") != e.post.get("reactions")
+                    or p.get("reply_count") != e.post.get("reply_count")
+                ):
+                    s.update_post(p)
+                    changed += 1
+            elif was_at_end and pid not in old_ids:
+                added.append(p)
+        n = s.add_posts(added) if added else 0
+        self._data = {**self._data, **{k: v for k, v in fresh.items() if k != "post_stream"}}
+        self._update_edges()
+        self._update_header()
+        fresh_new = len([i for i in new_ids if i not in old_ids])
+        if n:
+            self.app.notify(f"{n} new post{'s' if n > 1 else ''}.")
+        elif fresh_new and not was_at_end:
+            self.app.notify(f"{fresh_new} new post{'s' if fresh_new > 1 else ''} at the end (G).")
+        elif gone:
+            self.app.notify(f"{len(gone)} post{'s' if len(gone) > 1 else ''} removed.")
+
+    # --- upload ---
+
+    def action_upload(self) -> None:
+        def done(path: str | None) -> None:
+            if path:
+                self._upload_worker(path)
+
+        self.app.push_screen(FilePickerModal("Upload to forum"), done)
+
+    @work(thread=True, group="upload")
+    def _upload_worker(self, path: str) -> None:
+        upload_and_copy(self.app, path)
 
 
-def _strip_template(text: str) -> str:
-    lines = []
-    for line in text.splitlines():
-        if line.strip().startswith("<!--") and line.strip().endswith("-->"):
-            continue
-        lines.append(line)
-    return "\n".join(lines)
+def upload_and_copy(app, path: str) -> None:
+    """Upload a file and put its markdown on the clipboard. Runs in a worker."""
+    expanded = os.path.expanduser(path)
+    if not os.path.isfile(expanded):
+        app.call_from_thread(app.notify, f"No such file: {expanded}", severity="error")
+        return
+    try:
+        res = app.client.upload_file(expanded)
+    except ApiError as e:
+        app.call_from_thread(app.report_error, e, "Upload")
+        return
+    url = res.get("short_url") or res.get("url") or ""
+    name = res.get("original_filename") or os.path.basename(expanded)
+    is_image = (res.get("extension") or "").lower() in ("png", "jpg", "jpeg", "gif", "webp", "bmp", "svg")
+    md = f"![{name}]({url})" if is_image else f"[{name}|attachment]({url})"
+    copy_to_clipboard(md)
+    app.call_from_thread(app.notify, f"Uploaded. Markdown copied: {md}")

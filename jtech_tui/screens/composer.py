@@ -1,75 +1,54 @@
 from __future__ import annotations
 
-from typing import Any
-
+from rich.text import Text
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import Vertical
+from textual.containers import Vertical, VerticalScroll
 from textual.screen import ModalScreen
 from textual.widgets import Input, Label, OptionList, Static
 from textual.widgets.option_list import Option
 
 
-# Common Discourse reactions. The server decides which are accepted; unsupported
-# ones will surface as an error in the notification.
-REACTIONS: list[tuple[str, str, str]] = [
-    ("ok_hand", "👌", "OK"),
-    ("man_shrugging", "🤷", "Shrug"),
-    ("+1", "👍", "Like"),
-    ("folded_hands", "🙏", "Thanks"),
-    ("laughing", "😆", "Laughing"),
-    ("heart", "❤️", "Heart"),
-    ("-1", "👎", "Dislike"),
-    ("open_mouth", "😮", "Wow"),
-    ("cry", "😢", "Sad"),
-    ("clap", "👏", "Clap"),
-    ("hugs", "🤗", "Hug"),
-    ("confetti_ball", "🎉", "Celebrate"),
-    ("thinking", "🤔", "Hmm"),
-    ("rocket", "🚀", "Rocket"),
-    ("eyes", "👀", "Eyes"),
-]
-
-
-_REACTION_META: dict[str, tuple[str, str]] = {rid: (emoji, label) for rid, emoji, label in REACTIONS}
-
-
 class ReactionModal(ModalScreen[str | None]):
     """Pick a reaction to toggle on a post. Returns the reaction id or None.
 
-    Pass ``supported_ids`` to restrict the list to reactions the server actually
-    accepts. Empty/None shows the full fallback set.
+    ``reactions`` comes from the topic's ``valid_reactions``; ``mine`` is the reaction the user already has on the post (selecting it again removes it).
     """
 
     BINDINGS = [Binding("escape", "dismiss_none", "Cancel")]
 
-    def __init__(self, supported_ids: list[str] | None = None) -> None:
+    def __init__(self, reactions: list[str], emoji, mine: str | None = None) -> None:
         super().__init__()
-        self._supported = list(supported_ids or [])
-
-    def _items(self) -> list[tuple[str, str, str]]:
-        if not self._supported:
-            return REACTIONS
-        out: list[tuple[str, str, str]] = []
-        for rid in self._supported:
-            emoji, label = _REACTION_META.get(rid, (f":{rid}:", rid))
-            out.append((rid, emoji, label))
-        return out
+        self._reactions = reactions
+        self._emoji = emoji
+        self._mine = mine
 
     def compose(self) -> ComposeResult:
+        opts: list[Option] = []
+        for i, rid in enumerate(self._reactions):
+            label = Text(f"{i + 1 if i < 9 else ' '}  ", style="dim")
+            label.append_text(self._emoji.rich(rid))
+            label.append(f"  {rid.replace('_', ' ')}")
+            if rid == self._mine:
+                label.append("   ✓ yours, select to remove", style="bold")
+            opts.append(Option(label, id=rid))
         with Vertical(id="modal-box"):
             yield Static("React to post", id="modal-title")
-            yield OptionList(
-                *[
-                    Option(f"{emoji}   {label}", id=rid)
-                    for rid, emoji, label in self._items()
-                ],
-                id="react-opts",
-            )
-            yield Static("enter toggle · esc cancel", id="modal-hint")
+            yield OptionList(*opts, id="react-opts")
+            yield Static("enter or 1-9 toggle · esc cancel", id="modal-hint")
 
     def on_mount(self) -> None:
-        self.query_one("#react-opts", OptionList).focus()
+        opts = self.query_one("#react-opts", OptionList)
+        opts.focus()
+        if self._mine in self._reactions:
+            opts.highlighted = self._reactions.index(self._mine)
+
+    def on_key(self, event) -> None:
+        if event.character and event.character.isdigit() and event.character != "0":
+            i = int(event.character) - 1
+            if i < len(self._reactions):
+                event.stop()
+                self.dismiss(self._reactions[i])
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         self.dismiss(event.option.id)
@@ -86,22 +65,23 @@ class ReactorsModal(ModalScreen[None]):
         Binding("q", "close", "Close"),
     ]
 
-    def __init__(self, groups: list[tuple[str, list[str]]]) -> None:
+    def __init__(self, groups: list[tuple[str, list[str]]], emoji) -> None:
         super().__init__()
         self._groups = groups
+        self._emoji = emoji
 
     def compose(self) -> ComposeResult:
+        body = Text()
+        for i, (rid, users) in enumerate(self._groups):
+            if i:
+                body.append("\n\n")
+            body.append_text(self._emoji.rich(rid))
+            body.append(f"  {rid.replace('_', ' ')} ({len(users)})\n", style="bold")
+            body.append("  " + (", ".join(f"@{u}" for u in users) or "(hidden)"))
         with Vertical(id="modal-box"):
             yield Static("Reactions", id="modal-title")
-            if not self._groups:
-                yield Static("(no reactions)")
-            else:
-                lines: list[str] = []
-                for rid, users in self._groups:
-                    emoji, label = _REACTION_META.get(rid, (f":{rid}:", rid))
-                    who = ", ".join(f"@{u}" for u in users) or "(loading…)"
-                    lines.append(f"[b]{emoji} {label}[/b] ({len(users)})\n  {who}")
-                yield Static("\n\n".join(lines), markup=True)
+            with VerticalScroll(id="help-scroll"):
+                yield Static(body if self._groups else "(no reactions)")
             yield Static("esc · q to close", id="modal-hint")
 
     def action_close(self) -> None:
@@ -109,13 +89,14 @@ class ReactorsModal(ModalScreen[None]):
 
 
 class CopyMenuModal(ModalScreen[tuple[str, int] | None]):
-    """Pick what to copy from a post. Returns ('link', 0) or ('code', i)."""
+    """Pick what to copy from a post. Returns ('link', 0), ('code', i) or ('url', i)."""
 
     BINDINGS = [Binding("escape", "dismiss_none", "Cancel")]
 
-    def __init__(self, code_previews: list[str]) -> None:
+    def __init__(self, code_previews: list[str], links: list[tuple[str, str]] | None = None) -> None:
         super().__init__()
         self._code_previews = code_previews
+        self._links = links or []
 
     def compose(self) -> ComposeResult:
         opts: list[Option] = [Option("🔗  Copy post link", id="link:0")]
@@ -124,6 +105,9 @@ class CopyMenuModal(ModalScreen[tuple[str, int] | None]):
             if len(label) > 48:
                 label = label[:47] + "…"
             opts.append(Option(f"⧉  Copy code #{i + 1}: {label}", id=f"code:{i}"))
+        for i, (text, url) in enumerate(self._links):
+            label = url if len(url) <= 52 else url[:51] + "…"
+            opts.append(Option(f"↗  {label}", id=f"url:{i}"))
         with Vertical(id="modal-box"):
             yield Static("Copy…", id="modal-title")
             yield OptionList(*opts, id="copy-opts")

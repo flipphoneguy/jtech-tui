@@ -10,6 +10,23 @@ from textual.widget import Widget
 from textual.widgets import Static
 
 
+_KEY_NAMES = {
+    "escape": "esc",
+    "enter": "⏎",
+    "plus": "+",
+    "slash": "/",
+    "space": "␣",
+    "home": "home",
+    "end": "end",
+    "question_mark": "?",
+}
+
+
+def key_label(key: str) -> str:
+    """``escape,q`` -> ``esc/q``."""
+    return "/".join(_KEY_NAMES.get(k, k) for k in key.split(","))
+
+
 def collect_screen_bindings(screen, app) -> list[tuple[str, str]]:
     """Return ``(key, description)`` pairs for the screen + app bindings.
 
@@ -26,7 +43,7 @@ def collect_screen_bindings(screen, app) -> list[tuple[str, str]]:
             if b.key in seen:
                 continue
             seen.add(b.key)
-            out.append((b.key, b.description))
+            out.append((key_label(b.key), b.description))
     return out
 
 
