@@ -219,6 +219,8 @@ class Site:
                 pass
         if self.reactions != DEFAULT_REACTIONS:
             data["reactions"] = self.reactions
+        if self.user:
+            data["user"] = self.user
         self._apply(data)
         self.save_cache(data)
 
@@ -243,4 +245,6 @@ class Site:
         self.emoji.load(data.get("emojis"), data.get("aliases"))
         if data.get("reactions"):
             self.reactions = list(data["reactions"])
+        if data.get("user") and not self.user:
+            self.user = data["user"]
         self.loaded = True

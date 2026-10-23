@@ -19,6 +19,7 @@ _KEY_NAMES = {
     "home": "home",
     "end": "end",
     "question_mark": "?",
+    "exclamation_mark": "!",
 }
 
 
@@ -39,6 +40,9 @@ def collect_screen_bindings(screen, app) -> list[tuple[str, str]]:
             if not isinstance(b, Binding):
                 continue
             if not b.show or not b.description or not b.description.strip():
+                continue
+            check = getattr(screen, "check_action", None)
+            if src is getattr(screen, "BINDINGS", None) and check is not None and not check(b.action, ()):
                 continue
             if b.key in seen:
                 continue

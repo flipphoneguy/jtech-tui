@@ -203,9 +203,14 @@ class Renderer:
             new = (style or Style()) + Style(bold=True)
         elif tag in ("em", "i"):
             new = (style or Style()) + Style(italic=True)
-        elif tag in ("s", "del", "strike"):
+        elif tag == "del":
+            # Edit-history diffs use ins/del; color them like the web view.
+            new = (style or Style()) + Style.parse("strike #ff8787 on #3a1f1f")
+        elif tag == "ins":
+            new = (style or Style()) + Style.parse("#87d787 on #1f3a1f")
+        elif tag in ("s", "strike"):
             new = (style or Style()) + Style(strike=True)
-        elif tag in ("ins", "u"):
+        elif tag == "u":
             new = (style or Style()) + Style(underline=True)
         elif tag == "small":
             new = (style or Style()) + Style(dim=True)

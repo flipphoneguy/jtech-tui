@@ -175,6 +175,21 @@ ThreadScreen #loader {
     background: transparent;
 }
 
+ModalScreen > #modal-box.wide {
+    width: 100;
+    max-width: 95%;
+    max-height: 90%;
+}
+
+#text-scroll {
+    height: auto;
+    max-height: 30;
+}
+
+ModalScreen #menu-opts {
+    max-height: 20;
+}
+
 /* Help modal body */
 #help-scroll {
     height: 1fr;

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 
 def parse_time(s: str | None) -> datetime | None:
@@ -41,6 +42,41 @@ def local_time(s: str | None) -> str:
     if t is None:
         return ""
     return t.astimezone().strftime("%b %-d %Y, %-I:%M %p")
+
+
+_UNITS = {"m": 60, "h": 3600, "d": 86400, "w": 7 * 86400, "mo": 30 * 86400, "y": 365 * 86400}
+
+
+def parse_duration(s: str) -> int | None:
+    """``10m``, ``1h``, ``2d`` as seconds."""
+    m = re.fullmatch(r"(\d+)\s*(mo|m|h|d|w|y)", s.strip().lower())
+    return int(m.group(1)) * _UNITS[m.group(2)] if m else None
+
+
+def parse_when(s: str) -> datetime | None:
+    """``30m``, ``12h``, ``2d``, ``1w``, ``3mo``, ``1y``, ``forever`` or a date like ``2026-11-01``."""
+    s = s.strip().lower()
+    if not s:
+        return None
+    if s in ("forever", "permanent", "never"):
+        return datetime(3000, 1, 1, tzinfo=timezone.utc)
+    m = re.fullmatch(r"(\d+)\s*(mo|m|h|d|w|y)", s)
+    if m:
+        return datetime.now(timezone.utc) + timedelta(seconds=int(m.group(1)) * _UNITS[m.group(2)])
+    try:
+        t = datetime.fromisoformat(s)
+    except ValueError:
+        return None
+    return t if t.tzinfo else t.astimezone()
+
+
+def topic_id_from(s: str) -> int | None:
+    """Topic id from ``1234`` or a pasted ``…/t/slug/1234/5`` link."""
+    s = s.strip()
+    if s.isdigit():
+        return int(s)
+    m = re.search(r"/t/(?:[^/]+/)?(\d+)", s)
+    return int(m.group(1)) if m else None
 
 
 def truncate(s: str, width: int) -> str:

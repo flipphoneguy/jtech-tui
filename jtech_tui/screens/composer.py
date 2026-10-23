@@ -230,6 +230,96 @@ class SearchModal(ModalScreen[str | None]):
         self.dismiss(None)
 
 
+class MenuModal(ModalScreen[str | None]):
+    """Pick one action. ``items`` are ``(id, label)``; an id of ``""`` is a non-selectable heading."""
+
+    BINDINGS = [Binding("escape,q", "dismiss_none", "Cancel")]
+
+    def __init__(self, title: str, items: list[tuple[str, str]], hint: str = "enter select · esc cancel") -> None:
+        super().__init__()
+        self._title = title
+        self._items = items
+        self._hint = hint
+
+    def compose(self) -> ComposeResult:
+        opts: list[Option] = []
+        for oid, label in self._items:
+            if oid:
+                opts.append(Option(label, id=oid))
+            else:
+                opts.append(Option(Text(label, style="bold dim"), disabled=True))
+        with Vertical(id="modal-box"):
+            yield Static(self._title, id="modal-title")
+            yield OptionList(*opts, id="menu-opts")
+            yield Static(self._hint, id="modal-hint")
+
+    def on_mount(self) -> None:
+        opts = self.query_one("#menu-opts", OptionList)
+        opts.focus()
+        for i, (oid, _) in enumerate(self._items):
+            if oid:
+                opts.highlighted = i
+                break
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        self.dismiss(event.option.id)
+
+    def action_dismiss_none(self) -> None:
+        self.dismiss(None)
+
+
+class PromptModal(ModalScreen[str | None]):
+    """Ask for one line of text. Returns the text (possibly empty) or None on cancel."""
+
+    BINDINGS = [Binding("escape", "dismiss_none", "Cancel")]
+
+    def __init__(self, title: str, placeholder: str = "", value: str = "", hint: str = "") -> None:
+        super().__init__()
+        self._title = title
+        self._placeholder = placeholder
+        self._value = value
+        self._hint = hint or "enter confirm · esc cancel"
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="modal-box"):
+            yield Static(self._title, id="modal-title")
+            yield Input(value=self._value, placeholder=self._placeholder, id="prompt")
+            yield Static(self._hint, id="modal-hint")
+
+    def on_mount(self) -> None:
+        self.query_one("#prompt", Input).focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self.dismiss(event.value.strip())
+
+    def action_dismiss_none(self) -> None:
+        self.dismiss(None)
+
+
+class TextModal(ModalScreen[None]):
+    """Read-only scrollable text (edit history, flags, user info)."""
+
+    BINDINGS = [Binding("escape,q", "close", "Close")]
+
+    def __init__(self, title: str, body) -> None:
+        super().__init__()
+        self._title = title
+        self._body = body
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="modal-box", classes="wide"):
+            yield Static(self._title, id="modal-title")
+            with VerticalScroll(id="text-scroll"):
+                yield Static(self._body)
+            yield Static("esc · q close", id="modal-hint")
+
+    def on_mount(self) -> None:
+        self.query_one("#text-scroll").focus()
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+
 class ConfirmModal(ModalScreen[bool]):
     """Yes/No confirmation. Returns True/False."""
 

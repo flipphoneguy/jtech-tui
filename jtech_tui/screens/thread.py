@@ -18,6 +18,7 @@ from ..util import copy_to_clipboard, truncate
 from ..widgets import Entry, PostStream
 from .composer import ConfirmModal, CopyMenuModal, FilePickerModal, ReactionModal, ReactorsModal
 from .smart_footer import SmartFooter
+from .thread_mod import ThreadModMixin, topic_banner
 from .user_profile import UserProfileScreen
 
 CHUNK = 20
@@ -34,12 +35,16 @@ def strip_template(text: str) -> str:
     return "\n".join(lines)
 
 
-class ThreadScreen(Screen):
+class ThreadScreen(ThreadModMixin, Screen):
     BINDINGS = [
         Binding("escape,q", "back", "Back"),
         Binding("r", "reply", "Reply↩post"),
         Binding("t", "reply_topic", "Reply↩topic"),
         Binding("Q", "quote_reply", "Quote"),
+        Binding("m", "post_menu", "Mod post"),
+        Binding("M", "topic_menu", "Mod topic"),
+        Binding("w", "whisper", "Whisper"),
+        Binding("exclamation_mark", "flag", "Flag"),
         Binding("plus,enter", "react", "React"),
         Binding("ctrl+r", "react", "React", show=False),
         Binding("l", "show_reactors", "Reactors"),
@@ -183,6 +188,10 @@ class ThreadScreen(Screen):
         right = Text(pos, style="dim")
         pad = max(1, width - t.cell_len - right.cell_len)
         line = Text.assemble(t, " " * pad, right)
+        if self.app.site.is_staff:
+            banner = topic_banner(d)
+            if banner is not None:
+                flags.append(banner.plain)
         sub = " · ".join(bits + flags)
         if sub:
             line.append("\n" + truncate(sub, width), style="dim")
@@ -713,11 +722,13 @@ class ThreadScreen(Screen):
                     changed += 1
             elif was_at_end and pid not in old_ids:
                 added.append(p)
-        n = s.add_posts(added) if added else 0
+        s.add_posts(added)
+        # Small action posts ("closed this topic") aren't worth a notification.
+        n = len([p for p in added if p.get("post_type") != 3])
         self._data = {**self._data, **{k: v for k, v in fresh.items() if k != "post_stream"}}
         self._update_edges()
         self._update_header()
-        fresh_new = len([i for i in new_ids if i not in old_ids])
+        fresh_new = 0 if added else len([i for i in new_ids if i not in old_ids])
         if n:
             self.app.notify(f"{n} new post{'s' if n > 1 else ''}.")
         elif fresh_new and not was_at_end:
