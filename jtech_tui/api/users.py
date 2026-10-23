@@ -32,6 +32,44 @@ class UsersMixin(BaseClient):
     def unfollow(self, username: str) -> None:
         self.delete(f"/follow/{quote(username)}.json")
 
+    def followers(self, username: str) -> list[dict]:
+        return self.get(f"/u/{quote(username)}/follow/followers.json") or []
+
+    def following(self, username: str) -> list[dict]:
+        return self.get(f"/u/{quote(username)}/follow/following.json") or []
+
+    # --- REQ-PM (jtech-tools contact exchange) ---
+
+    def reqpm_relationship(self, username: str) -> dict:
+        return self.get(f"/jtech-reqpm/users/{quote(username)}")
+
+    def reqpm_inbox(self) -> dict:
+        return self.get("/jtech-reqpm/inbox")
+
+    def reqpm_card(self) -> dict:
+        return self.get("/jtech-reqpm/card")
+
+    def reqpm_request(self, username: str, wanted_kinds: list[str] | None = None) -> dict:
+        payload: dict[str, Any] = {"username": username}
+        if wanted_kinds:
+            payload["wanted_kinds"] = wanted_kinds
+        return self.post("/jtech-reqpm/requests", payload)
+
+    def reqpm_cancel(self, request_id: int) -> None:
+        self.delete(f"/jtech-reqpm/requests/{request_id}")
+
+    def reqpm_decline(self, request_id: int) -> None:
+        self.post(f"/jtech-reqpm/requests/{request_id}/decline")
+
+    def reqpm_share(self, username: str, method_ids: list[int]) -> dict:
+        return self.post("/jtech-reqpm/shares", {"username": username, "method_ids": method_ids})
+
+    def reqpm_revoke(self, username: str) -> None:
+        self.delete(f"/jtech-reqpm/shares/{quote(username)}")
+
+    def reqpm_forget(self, username: str) -> None:
+        self.delete(f"/jtech-reqpm/received/{quote(username)}")
+
     def set_status(self, description: str, emoji: str = "", ends_at: str = "") -> None:
         status: dict[str, Any] = {"description": description}
         if emoji:

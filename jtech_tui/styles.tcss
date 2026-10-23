@@ -190,6 +190,29 @@ ModalScreen #menu-opts {
     max-height: 20;
 }
 
+ModalScreen #checks {
+    height: auto;
+    max-height: 16;
+    margin: 0 0 1 0;
+}
+
+/* Profile / REQ-PM */
+#profile-head, #reqpm-head {
+    padding: 0 1;
+    height: auto;
+    background: $panel;
+}
+
+#profile-sections {
+    height: 1;
+    margin: 1 0 0 0;
+}
+
+#profile-bio {
+    height: 1fr;
+    padding: 0 1;
+}
+
 /* Compact toasts: one short line, out of the way */
 Toast {
     padding: 0 1;

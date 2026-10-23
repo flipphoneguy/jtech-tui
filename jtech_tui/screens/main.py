@@ -162,6 +162,7 @@ class MainScreen(StaffTabMixin, Screen):
         Binding("slash", "search", "Search"),
         Binding("U", "upload", "Upload"),
         Binding("L", "leaderboard", "Leaderboard"),
+        Binding("P", "my_profile", "Me"),
         Binding("f", "filter", "Filter"),
         Binding("w", "topic_level", "Watch…"),
         Binding("D", "dismiss_unseen", "Dismiss"),
@@ -953,6 +954,13 @@ class MainScreen(StaffTabMixin, Screen):
             if path:
                 self._do_upload(path)
         self.app.push_screen(FilePickerModal("Upload to forum"), _done)
+
+    def action_my_profile(self) -> None:
+        from .user_profile import UserProfileScreen
+
+        me = self.app.site.username or self.app.cfg.username
+        if me:
+            self.app.push_screen(UserProfileScreen(me))
 
     def action_leaderboard(self) -> None:
         self.app.push_screen(LeaderboardScreen())

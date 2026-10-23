@@ -268,6 +268,40 @@ class MenuModal(ModalScreen[str | None]):
         self.dismiss(None)
 
 
+class ChecklistModal(ModalScreen[list[str] | None]):
+    """Tick several items. ``items`` are ``(id, label, checked)``. Returns the ticked ids or None."""
+
+    BINDINGS = [
+        Binding("escape", "dismiss_none", "Cancel"),
+        Binding("enter", "confirm", "Confirm", priority=True),
+    ]
+
+    def __init__(self, title: str, items: list[tuple[str, str, bool]], hint: str = "space toggle · enter confirm · esc cancel") -> None:
+        super().__init__()
+        self._title = title
+        self._items = items
+        self._hint = hint
+
+    def compose(self) -> ComposeResult:
+        from textual.widgets import SelectionList
+
+        with Vertical(id="modal-box"):
+            yield Static(self._title, id="modal-title")
+            yield SelectionList[str](*[(label, oid, checked) for oid, label, checked in self._items], id="checks")
+            yield Static(self._hint, id="modal-hint")
+
+    def on_mount(self) -> None:
+        self.query_one("#checks").focus()
+
+    def action_confirm(self) -> None:
+        from textual.widgets import SelectionList
+
+        self.dismiss(list(self.query_one("#checks", SelectionList).selected))
+
+    def action_dismiss_none(self) -> None:
+        self.dismiss(None)
+
+
 class PromptModal(ModalScreen[str | None]):
     """Ask for one line of text. Returns the text (possibly empty) or None on cancel."""
 
