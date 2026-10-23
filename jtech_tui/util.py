@@ -70,6 +70,28 @@ def parse_when(s: str) -> datetime | None:
     return t if t.tzinfo else t.astimezone()
 
 
+def internal_target(url: str, base_url: str) -> tuple[str, object, int | None] | None:
+    """Classify a forum link: ``("topic", id, post_number)``, ``("user", name, None)`` or None if external.
+
+    The forum's own host and its parent domain (jtechforums.org for forums.jtechforums.org) count as internal.
+    """
+    from urllib.parse import urlparse
+
+    base_host = urlparse(base_url).hostname or ""
+    u = urlparse(url)
+    host = u.hostname or ""
+    if host and host != base_host and not base_host.endswith("." + host):
+        return None
+    path = u.path
+    m = re.match(r"/t/(?:[^/]+/)?(\d+)(?:/(\d+))?", path)
+    if m:
+        return "topic", int(m.group(1)), int(m.group(2)) if m.group(2) else None
+    m = re.match(r"/u/([^/?#]+)", path)
+    if m:
+        return "user", m.group(1), None
+    return None
+
+
 def topic_id_from(s: str) -> int | None:
     """Topic id from ``1234`` or a pasted ``…/t/slug/1234/5`` link."""
     s = s.strip()

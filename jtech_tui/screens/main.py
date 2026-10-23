@@ -164,7 +164,7 @@ class MainScreen(StaffTabMixin, Screen):
         Binding("L", "leaderboard", "Leaderboard"),
         Binding("f", "filter", "Filter"),
         Binding("w", "topic_level", "Watch…"),
-        Binding("D", "dismiss", "Dismiss"),
+        Binding("D", "dismiss_unseen", "Dismiss"),
         Binding("ctrl+right", "next_tab", "Next tab", show=False),
         Binding("ctrl+left", "prev_tab", "Prev tab", show=False),
         Binding("down", "tabs_down", "", show=False),
@@ -740,7 +740,7 @@ class MainScreen(StaffTabMixin, Screen):
 
         self.app.push_screen(MenuModal(f"Filter {FEED_LABELS[feed]}", items), done)
 
-    def action_dismiss(self) -> None:
+    def action_dismiss_unseen(self) -> None:
         if self._current_feed() != "unseen":
             self.app.notify("Dismiss works on the Unseen tab.")
             return

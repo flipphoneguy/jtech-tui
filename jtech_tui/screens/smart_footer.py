@@ -20,6 +20,7 @@ _KEY_NAMES = {
     "end": "end",
     "question_mark": "?",
     "exclamation_mark": "!",
+    "number_sign": "#",
 }
 
 

@@ -14,9 +14,17 @@ from textual.widgets import Header, LoadingIndicator, Static
 
 from ..api import ApiError
 from ..editor import edit_markdown
-from ..util import copy_to_clipboard, truncate
+from ..util import copy_to_clipboard, internal_target, truncate
 from ..widgets import Entry, PostStream
-from .composer import ConfirmModal, CopyMenuModal, FilePickerModal, ReactionModal, ReactorsModal
+from .composer import (
+    ConfirmModal,
+    CopyMenuModal,
+    FilePickerModal,
+    MenuModal,
+    PromptModal,
+    ReactionModal,
+    ReactorsModal,
+)
 from .smart_footer import SmartFooter
 from .thread_mod import ThreadModMixin, topic_banner
 from .user_profile import UserProfileScreen
@@ -53,6 +61,8 @@ class ThreadScreen(ThreadModMixin, Screen):
         Binding("Y", "copy_menu", "Copy…"),
         Binding("o", "open_url", "Browser"),
         Binding("p", "jump_to_parent", "Jump→reply"),
+        Binding("number_sign", "jump_number", "Jump #"),
+        Binding("L", "links", "Links"),
         Binding("u", "user_profile", "Profile"),
         Binding("x", "toggle_collapse", "Collapse"),
         Binding("S", "toggle_spoilers", "Spoilers"),
@@ -336,6 +346,54 @@ class ThreadScreen(ThreadModMixin, Screen):
             self.app.notify("This post isn't a reply.")
             return
         self.jump_to(rpn)
+
+    def action_jump_number(self) -> None:
+        highest = self._data.get("highest_post_number") or 0
+
+        def done(v: str | None) -> None:
+            if v and v.strip().lstrip("#").isdigit():
+                self.jump_to(max(1, min(int(v.strip().lstrip("#")), highest or 10**6)))
+
+        self.app.push_screen(PromptModal(f"Jump to post # (1–{highest})", "post number"), done)
+
+    def action_links(self) -> None:
+        e = self._current()
+        if e is None:
+            return
+        r = e.rendered
+        links: list[tuple[str, str]] = list(r.links) if r else []
+        for u in e.post.get("mentioned_users") or []:
+            if u.get("username"):
+                links.append((f"@{u['username']}", f"{self.app.client.base_url}/u/{u['username']}"))
+        if not links:
+            self.app.notify("No links in this post.")
+            return
+        base = self.app.client.base_url
+        items: list[tuple[str, str]] = []
+        for i, (label, url) in enumerate(links):
+            kind = internal_target(url, base)
+            icon = "💬" if kind and kind[0] == "topic" else "👤" if kind else "↗"
+            text = label if label and label != url else url
+            items.append((str(i), f"{icon} {truncate(text, 60)}"))
+
+        def done(choice: str | None) -> None:
+            if choice is not None:
+                self.open_link(links[int(choice)][1])
+
+        self.app.push_screen(MenuModal(f"Links in post #{e.number}", items, "enter open · esc cancel"), done)
+
+    def open_link(self, url: str) -> None:
+        target = internal_target(url, self.app.client.base_url)
+        if target is None:
+            self.app.open_url(url)
+            return
+        kind, ref, post = target
+        if kind == "user":
+            self.app.push_screen(UserProfileScreen(str(ref)))
+        elif ref == self._tid and post:
+            self.jump_to(post)
+        else:
+            self.app.push_screen(ThreadScreen({"id": ref, "title": ""}, target_post=post))
 
     def jump_to(self, number: int) -> None:
         idx = self.stream.index_of_number(number)
