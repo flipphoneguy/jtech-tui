@@ -276,11 +276,19 @@ class ChecklistModal(ModalScreen[list[str] | None]):
         Binding("enter", "confirm", "Confirm", priority=True),
     ]
 
-    def __init__(self, title: str, items: list[tuple[str, str, bool]], hint: str = "space toggle · enter confirm · esc cancel") -> None:
+    def __init__(
+        self,
+        title: str,
+        items: list[tuple[str, str, bool]],
+        hint: str = "space toggle · enter confirm · esc cancel",
+        validate=None,
+    ) -> None:
         super().__init__()
         self._title = title
         self._items = items
         self._hint = hint
+        # Optional check on the ticked ids; returns an error message to keep the dialog open.
+        self._validate = validate
 
     def compose(self) -> ComposeResult:
         from textual.widgets import SelectionList
@@ -296,7 +304,12 @@ class ChecklistModal(ModalScreen[list[str] | None]):
     def action_confirm(self) -> None:
         from textual.widgets import SelectionList
 
-        self.dismiss(list(self.query_one("#checks", SelectionList).selected))
+        picked = list(self.query_one("#checks", SelectionList).selected)
+        error = self._validate(picked) if self._validate else None
+        if error:
+            self.app.notify(error, severity="warning")
+            return
+        self.dismiss(picked)
 
     def action_dismiss_none(self) -> None:
         self.dismiss(None)

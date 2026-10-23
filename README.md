@@ -10,7 +10,8 @@ Read and reply to threads, react, search, follow people, swap contact cards with
 
 - **Live updates.** The app listens on the same MessageBus channel the website uses. New replies show up in the thread you're reading within a second or two, the notification count updates by itself, and Latest/Unseen show how many new topics arrived. A small toast pops up for a few seconds when a notification comes in.
 - **A thread view that stays put.** Threads open on your first unread post and stay there while older posts load above. Posts are drawn line by line, so long threads stay fast.
-- **Posts look like posts.** Quotes show who wrote them, link previews show the site and title, code is highlighted, images show their name and size, spoilers stay hidden until you reveal them, polls show their results, and dates appear in your own timezone.
+- **Posts look like posts.** Quotes show who wrote them, link previews show the site and title, code is highlighted, images show their name and size, spoilers stay hidden until you reveal them, and dates appear in your own timezone.
+- **Polls and solutions.** Vote in polls and see the results, mark a reply as the solution, and jump straight to a topic's solution.
 - **Everything the server allows, nothing it doesn't.** Reactions, flag types, notification types and categories come from the forum itself. Edit, delete and every mod action are offered only when the server says you can do them.
 - **jtech's custom emoji.** `meh` and `jtechforums` render as small colored badges instead of `:meh:`.
 - **Moderation, for staff.** A Staff tab (review queue, staff notes, moderators inbox, staff log), post and topic menus, jtech whispers, and a user moderation screen. None of it appears for regular accounts.
@@ -85,6 +86,9 @@ Scrolling to the bottom of a list loads the next page.
 | `r` / `t` | Reply to the post / to the topic |
 | `Q` | Quote reply |
 | `enter` or `+` | React (numbers 1–9 pick in the menu; choosing your own reaction removes it) |
+| `V` | Vote in the post's poll; vote again to change it or remove it |
+| `A` | Mark or unmark the post as the solution (when you're allowed) |
+| `J` | Go to the solution |
 | `l` | Who reacted |
 | `L` | Links in the post (forum links open in the app, others in the browser) |
 | `y` | Copy the post's markdown |
@@ -101,7 +105,9 @@ Scrolling to the bottom of a list loads the next page.
 | `R` | Reload |
 | `esc` / `q` | Back |
 
-The header shows the category, tags, state (closed, solved, unlisted) and where you are, like `166/426`.
+The header shows the category, tags, state (closed, unlisted, and for solved topics which post is the solution) and where you are, like `166/426`. Keys that don't apply to the selected post, like `V` on a post without a poll, are left out of the footer.
+
+**Polls** show their results as bars. Single-choice polls vote from a menu; multiple-choice polls use a checklist with your current picks ticked (untick everything to remove your vote). Ranked-choice polls open in the browser.
 
 ## People
 

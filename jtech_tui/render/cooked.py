@@ -230,6 +230,13 @@ class Renderer:
         for c in node.children:
             self.inline(c, buf, new)
 
+    def inline_html(self, html: str) -> Text:
+        """Render a fragment (a poll option, a title) as one line of styled text."""
+        buf = Text()
+        for c in parse(html).children:
+            self.inline(c, buf)
+        return _strip_text(buf)
+
     def _inline_img(self, node: Node, buf: Text) -> None:
         cls = node.classes
         if "emoji" in cls:
@@ -502,19 +509,27 @@ class Renderer:
         head = Text("📊 ", style="bold")
         head.append(_WS.sub(" ", title_n.text()).strip() if title_n else "Poll", style="bold")
         meta = f"  {data.get('voters', 0)} voters"
+        if data.get("type") == "multiple":
+            lo, hi = data.get("min"), data.get("max")
+            meta += f" · pick {lo}–{hi}" if lo and hi and lo != hi else f" · pick {hi or lo or 'several'}"
         if status == "closed":
             meta += " · closed"
+        elif data.get("type") != "ranked_choice":
+            meta += " · V to vote" if not mine else " · V to change vote"
         head.append(meta, style=STYLES["muted"])
         lines.append(head)
         options = data.get("options") or []
         total = sum(int(o.get("votes") or 0) for o in options) or 0
         show = any("votes" in o for o in options)
+        if not show and status != "closed":
+            hidden = {"on_vote": "results after you vote", "on_close": "results when it closes", "staff_only": "results for staff only"}
+            if data.get("results") in hidden:
+                lines.append(Text(hidden[data["results"]], style=STYLES["muted"]))
         width = 18
         for o in options:
-            label = _WS.sub(" ", parse(o.get("html") or "").text()).strip()
             mark = "●" if o.get("id") in mine else "○"
             line = Text(f"{mark} ", style="bold" if mark == "●" else "")
-            line.append(label)
+            line.append_text(self.inline_html(o.get("html") or ""))
             if show:
                 votes = int(o.get("votes") or 0)
                 pct = round(100 * votes / total) if total else 0
@@ -562,6 +577,10 @@ def render_cooked(
     root = parse(cooked)
     r.out.body = _stack(r.blocks(root))
     return r.out
+
+
+def inline_text(html: str, site: "Site | None", base_url: str) -> Text:
+    return Renderer(site, base_url).inline_html(html)
 
 
 def plain_text(cooked: str) -> str:

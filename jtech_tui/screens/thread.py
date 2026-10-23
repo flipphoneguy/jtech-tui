@@ -26,6 +26,7 @@ from .composer import (
     ReactorsModal,
 )
 from .smart_footer import SmartFooter
+from .thread_extras import SolvedPollsMixin
 from .thread_mod import ThreadModMixin, topic_banner
 from .user_profile import UserProfileScreen
 
@@ -44,7 +45,7 @@ def strip_template(text: str) -> str:
     return "\n".join(lines)
 
 
-class ThreadScreen(ThreadModMixin, Screen):
+class ThreadScreen(SolvedPollsMixin, ThreadModMixin, Screen):
     BINDINGS = [
         Binding("escape,q", "back", "Back"),
         Binding("r", "reply", "Reply↩post"),
@@ -62,6 +63,9 @@ class ThreadScreen(ThreadModMixin, Screen):
         Binding("o", "open_url", "Browser"),
         Binding("p", "jump_to_parent", "Jump→reply"),
         Binding("number_sign", "jump_number", "Jump #"),
+        Binding("A", "accept", "Solution ✓"),
+        Binding("J", "jump_solution", "Go to solution"),
+        Binding("V", "vote", "Vote"),
         Binding("slash", "search_topic", "Find"),
         Binding("L", "links", "Links"),
         Binding("u", "user_profile", "Profile"),
@@ -217,7 +221,11 @@ class ThreadScreen(ThreadModMixin, Screen):
         if d.get("archived"):
             flags.append("archived")
         if d.get("has_accepted_answer"):
-            flags.append("✓ solved")
+            sol = self.solution() if self._data else None
+            if sol and sol.get("post_number"):
+                flags.append(f"✓ solved → #{sol['post_number']} @{sol.get('username', '')} (J)")
+            else:
+                flags.append("✓ solved")
         if d.get("visible") is False:
             flags.append("unlisted")
         cur = self.stream.current
@@ -242,6 +250,8 @@ class ThreadScreen(ThreadModMixin, Screen):
     @on(PostStream.CursorMoved)
     def _cursor_moved(self, event: PostStream.CursorMoved) -> None:
         self._update_header()
+        # A and V depend on the selected post.
+        self.query_one(SmartFooter).refresh()
 
     # --- lazy loading ---
 
