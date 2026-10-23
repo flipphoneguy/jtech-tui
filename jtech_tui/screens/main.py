@@ -36,6 +36,7 @@ from .composer import (
 )
 from .leaderboard import LeaderboardScreen
 from ..widgets import VimDataTable
+from .search_tab import SearchTabMixin
 from .staff_tab import StaffTabMixin
 from .thread import ThreadScreen, upload_and_copy
 
@@ -153,7 +154,7 @@ def _posts_cell(topic: dict) -> Text:
     return Text(str(total), style="dim")
 
 
-class MainScreen(StaffTabMixin, Screen):
+class MainScreen(StaffTabMixin, SearchTabMixin, Screen):
     BINDINGS = [
         Binding("ctrl+q", "app.quit", "Quit", priority=True),
         Binding("R", "reload", "Reload"),
@@ -163,6 +164,8 @@ class MainScreen(StaffTabMixin, Screen):
         Binding("U", "upload", "Upload"),
         Binding("L", "leaderboard", "Leaderboard"),
         Binding("P", "my_profile", "Me"),
+        # Works while typing in the search box, where plain letters would be text.
+        Binding("ctrl+f", "filter", "Filters", show=False, priority=True),
         Binding("f", "filter", "Filter"),
         Binding("w", "topic_level", "Watch…"),
         Binding("D", "dismiss_unseen", "Dismiss"),
@@ -218,7 +221,7 @@ class MainScreen(StaffTabMixin, Screen):
                     yield VimDataTable(id="tbl-staff", cursor_type="row", zebra_stripes=True)
             with TabPane("Search", id="tab-search"):
                 with Vertical():
-                    yield Input(placeholder="Type query, press enter…", id="search-input")
+                    yield Input(placeholder="Search… (ctrl+f filters: category, user, tag, date, solved, sort)", id="search-input")
                     yield VimDataTable(id="tbl-search", cursor_type="row", zebra_stripes=True)
         yield SmartFooter()
 
@@ -230,7 +233,7 @@ class MainScreen(StaffTabMixin, Screen):
         self.query_one("#tbl-categories", DataTable).add_columns("Category", "Topics", "Description")
         self.query_one("#tbl-messages", DataTable).add_columns(" ", "Subject", "Posts", "Activity")
         self.query_one("#tbl-notifications", DataTable).add_columns("●", "Type", "From", "Title")
-        self.query_one("#tbl-search", DataTable).add_columns("Title", "Blurb")
+        self.query_one("#tbl-search", DataTable).add_columns("Topic", "Match", "When")
 
         self.query_one("#tbl-staff", VimDataTable).sideways = self._staff_switch
         self.query_one("#tbl-search", VimDataTable).up_target = lambda: self.query_one("#search-input")
@@ -531,6 +534,9 @@ class MainScreen(StaffTabMixin, Screen):
         if not tid.startswith("tbl-"):
             return
         feed = tid[4:]
+        if feed == "search":
+            self._search_load_more()
+            return
         if feed not in FEEDS:
             return
         if not self._feed_has_more.get(feed):
@@ -704,9 +710,12 @@ class MainScreen(StaffTabMixin, Screen):
         return self._topic_cache.get(key or "") if key and key.startswith("topic:") else None
 
     def action_filter(self) -> None:
+        if self._current_tab_id() == "tab-search":
+            self.action_search_filters()
+            return
         feed = self._current_feed()
         if feed is None:
-            self.app.notify("Filters work on the Latest and Unseen tabs.")
+            self.app.notify("Filters work on the Latest, Unseen and Search tabs.")
             return
         site = self.app.site
         items: list[tuple[str, str]] = []
@@ -790,52 +799,6 @@ class MainScreen(StaffTabMixin, Screen):
         name = dict(NOTIFICATION_LEVELS)[str(level)]
         self.app.call_from_thread(self.app.notify, f"{name}: {_truncate(topic.get('title', ''), 40)}")
 
-    # --- search ---
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        if event.input.id == "search-input":
-            q = event.value.strip()
-            if q:
-                self._run_search(q)
-
-    @work(thread=True, exclusive=True, group="search")
-    def _run_search(self, query: str) -> None:
-        try:
-            res = self.app.client.search(query)
-        except ApiError as e:
-            self.app.call_from_thread(self.app.report_error, e, "Search")
-            return
-        self.app.call_from_thread(self._populate_search, res)
-
-    def _populate_search(self, res: dict) -> None:
-        self._view_data["search"] = res
-        t = self.query_one("#tbl-search", DataTable)
-        prev = t.cursor_row
-        t.clear()
-        total = self.size.width or 80
-        title_w = max(20, total // 3)
-        blurb_w = max(20, total - title_w - 6)
-        topics_by_id = {t_.get("id"): t_ for t_ in (res.get("topics") or [])}
-        posts = res.get("posts") or []
-        seen: set[int] = set()
-        for p in posts:
-            tid = p.get("topic_id")
-            if not tid or tid in seen:
-                continue
-            seen.add(tid)
-            topic = topics_by_id.get(tid, {"id": tid, "title": p.get("topic_title_headline") or ""})
-            key = f"topic:{tid}"
-            self._topic_cache[key] = topic
-            blurb = (p.get("blurb") or "").replace("\n", " ")
-            title = topic.get("title") or p.get("topic_title_headline") or str(tid)
-            t.add_row(_truncate(title, title_w), _truncate(blurb, blurb_w), key=key)
-        if not seen:
-            for topic in res.get("topics") or []:
-                tid = topic.get("id")
-                key = f"topic:{tid}"
-                self._topic_cache[key] = topic
-                t.add_row(_truncate(topic.get("title", ""), title_w), "", key=key)
-        self._restore_cursor(t, prev)
-
     # --- row selection routing ---
     @on(DataTable.RowSelected)
     def _row_selected(self, event: DataTable.RowSelected) -> None:
@@ -864,7 +827,7 @@ class MainScreen(StaffTabMixin, Screen):
                 post_number = notif.get("post_number")
                 target = post_number if isinstance(post_number, int) and post_number > 0 else None
                 self.app.push_screen(ThreadScreen(topic, target_post=target))
-        else:
+        elif not self._search_row_selected(key):
             self._staff_row_selected(key)
 
     # --- compose actions ---

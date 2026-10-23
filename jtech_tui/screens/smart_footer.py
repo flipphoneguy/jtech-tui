@@ -21,6 +21,7 @@ _KEY_NAMES = {
     "question_mark": "?",
     "exclamation_mark": "!",
     "number_sign": "#",
+    "ctrl+f": "^f",
 }
 
 

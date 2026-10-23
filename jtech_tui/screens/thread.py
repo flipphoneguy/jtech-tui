@@ -62,6 +62,7 @@ class ThreadScreen(ThreadModMixin, Screen):
         Binding("o", "open_url", "Browser"),
         Binding("p", "jump_to_parent", "Jump→reply"),
         Binding("number_sign", "jump_number", "Jump #"),
+        Binding("slash", "search_topic", "Find"),
         Binding("L", "links", "Links"),
         Binding("u", "user_profile", "Profile"),
         Binding("x", "toggle_collapse", "Collapse"),
@@ -355,6 +356,38 @@ class ThreadScreen(ThreadModMixin, Screen):
                 self.jump_to(max(1, min(int(v.strip().lstrip("#")), highest or 10**6)))
 
         self.app.push_screen(PromptModal(f"Jump to post # (1–{highest})", "post number"), done)
+
+    def action_search_topic(self) -> None:
+        def done(q: str | None) -> None:
+            if q:
+                self._search_topic_worker(q)
+
+        self.app.push_screen(PromptModal("Find in this topic:", "words, @user…"), done)
+
+    @work(thread=True, exclusive=True, group="topic-search")
+    def _search_topic_worker(self, query: str) -> None:
+        try:
+            res = self.app.client.search(f"{query} topic:{self._tid}")
+        except ApiError as e:
+            self.app.call_from_thread(self.app.report_error, e, "Search")
+            return
+        self.app.call_from_thread(self._show_topic_hits, query, res.get("posts") or [])
+
+    def _show_topic_hits(self, query: str, posts: list[dict]) -> None:
+        if not posts:
+            self.app.notify(f"No posts match “{query}”.")
+            return
+        posts = sorted(posts, key=lambda p: p.get("post_number") or 0)
+        items = [
+            (str(p.get("post_number")), f"#{p.get('post_number')} @{p.get('username', '')}: {truncate((p.get('blurb') or '').replace(chr(10), ' '), 60)}")
+            for p in posts
+        ]
+
+        def done(choice: str | None) -> None:
+            if choice:
+                self.jump_to(int(choice))
+
+        self.app.push_screen(MenuModal(f"“{query}” in this topic ({len(posts)})", items), done)
 
     def action_links(self) -> None:
         e = self._current()
