@@ -9,6 +9,7 @@ from textual.binding import Binding
 
 from .api import ApiError, Client, RateLimited, Unauthorized
 from .config import Config
+from .live import LiveBus
 from .site import Site
 from .util import open_url
 
@@ -30,6 +31,9 @@ class JtechApp(App):
         self.client: Client = self._make_client(self.cfg.session_cookie)
         self.site = Site(self.client.host)
         self.site.load_cache()
+        self.live = LiveBus(self)
+        self._live_user: int | None = None
+        self._last_toast_id = 0
 
     def _make_client(self, cookie: str) -> Client:
         return Client(self.cfg.forum_url, cookie, on_cookie_change=self._cookie_rotated)
@@ -84,10 +88,50 @@ class JtechApp(App):
         self.call_from_thread(self._site_ready)
 
     def _site_ready(self) -> None:
+        self._start_live()
         for screen in self.screen_stack:
             hook = getattr(screen, "on_site_ready", None)
             if hook:
                 hook()
+
+    # --- live updates ---
+
+    def _start_live(self) -> None:
+        uid = self.site.user.get("id")
+        if not uid or uid == self._live_user:
+            return
+        self._live_user = uid
+        self._last_toast_id = int(self.site.user.get("seen_notification_id") or 0)
+        self.live.subscribe(f"/notification/{uid}", self._on_notification, self.site.user.get("notification_channel_position"))
+        if self.site.can_review:
+            self.live.subscribe(f"/reviewable_counts/{uid}", self._on_review_count)
+
+    def _on_notification(self, data: dict) -> None:
+        for k in ("unread_notifications", "unread_high_priority_notifications", "all_unread_notifications_count"):
+            if k in data:
+                self.site.user[k] = data[k]
+        self._broadcast("on_live_notification", data)
+        n = (data.get("last_notification") or {}).get("notification") or {}
+        nid = n.get("id") or 0
+        if nid > self._last_toast_id and not n.get("read"):
+            self._last_toast_id = nid
+            who = (n.get("data") or {}).get("display_username") or (n.get("data") or {}).get("original_username") or ""
+            what = self.site.notification_name(n.get("notification_type"))
+            title = n.get("fancy_title") or (n.get("data") or {}).get("topic_title") or ""
+            line = f"🔔 {'@' + who + ' ' if who else ''}{what}: {title}"
+            self.notify(line[:70], timeout=3, markup=False)
+
+    def _on_review_count(self, data: dict) -> None:
+        self._broadcast("on_live_review_count", data)
+
+    def _broadcast(self, hook_name: str, data: dict) -> None:
+        for screen in self.screen_stack:
+            hook = getattr(screen, hook_name, None)
+            if hook:
+                hook(data)
+
+    def on_unmount(self) -> None:
+        self.live.stop()
 
     def report_error(self, e: Exception, what: str = "") -> None:
         """Show an API error. Call on the main thread."""

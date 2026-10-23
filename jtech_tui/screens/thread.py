@@ -22,7 +22,8 @@ from .thread_mod import ThreadModMixin, topic_banner
 from .user_profile import UserProfileScreen
 
 CHUNK = 20
-POLL_SECONDS = 30.0
+# Backup poll; live updates normally arrive over MessageBus within a second.
+POLL_SECONDS = 120.0
 PREFETCH_FRESH = 60.0
 
 
@@ -82,6 +83,8 @@ class ThreadScreen(ThreadModMixin, Screen):
         self._auto = None
         self._seen_buf: set[int] = set()
         self._seen_timer = None
+        self._live_on = False
+        self._live_timer = None
 
     # --- setup ---
 
@@ -107,6 +110,29 @@ class ThreadScreen(ThreadModMixin, Screen):
 
     def on_unmount(self) -> None:
         self._flush_seen()
+        self._live_stop()
+
+    # --- live updates ---
+
+    def _live_start(self, last_id: int | None) -> None:
+        if self._live_on:
+            return
+        self._live_on = True
+        self.app.live.subscribe(f"/topic/{self._tid}", self._on_live, last_id)
+
+    def _live_stop(self) -> None:
+        if self._live_on:
+            self._live_on = False
+            self.app.live.unsubscribe(f"/topic/{self._tid}", self._on_live)
+
+    def _on_live(self, data: dict) -> None:
+        # Bursts (a post plus its reactions) collapse into one refresh.
+        if self._live_timer is None:
+            self._live_timer = self.set_timer(0.4, self._live_fire)
+
+    def _live_fire(self) -> None:
+        self._live_timer = None
+        self._poll()
 
     def _landing(self, data: dict, target: int | None) -> int:
         if target:
@@ -159,6 +185,8 @@ class ThreadScreen(ThreadModMixin, Screen):
         )
         s.focus()
         self._update_header()
+        if self._auto is not None:
+            self._live_start(data.get("message_bus_last_id"))
 
     # --- header ---
 
@@ -675,10 +703,13 @@ class ThreadScreen(ThreadModMixin, Screen):
         if self._auto is not None:
             self._auto.stop()
             self._auto = None
-            self.app.notify("Auto-refresh off.")
+            self._live_stop()
+            self.app.notify("Live updates off.")
         else:
             self._auto = self.set_interval(POLL_SECONDS, self._poll)
-            self.app.notify(f"Auto-refresh on ({int(POLL_SECONDS)}s).")
+            self._live_start(self._data.get("message_bus_last_id"))
+            self._poll()
+            self.app.notify("Live updates on.")
 
     def _poll(self) -> None:
         s = self.stream

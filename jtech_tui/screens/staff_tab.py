@@ -63,14 +63,14 @@ class StaffTabMixin:
         self._set_tab_badge("tab-staff", "Staff", total)
         self._render_sections()
 
-    def _set_tab_badge(self, tab_id: str, label: str, count: int) -> None:
+    def _set_tab_badge(self, tab_id: str, label: str, count: int, mark: str = "●") -> None:
         try:
             from textual.widgets._tabbed_content import ContentTab
 
             tab = self.query_one(f"#--content-tab-{tab_id}", ContentTab)
         except Exception:  # noqa: BLE001
             return
-        tab.label = Text.assemble(f"{label} ", ("●", "bold yellow"), f" {count}") if count else label
+        tab.label = Text.assemble(f"{label} ", (mark, "bold yellow"), f"{' ' if mark == '●' else ''}{count}") if count else label
 
     def _render_sections(self) -> None:
         t = Text(" ")

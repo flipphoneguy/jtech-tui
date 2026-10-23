@@ -120,6 +120,7 @@ class MainScreen(StaffTabMixin, Screen):
         self._feed_has_more: dict[str, bool] = {}
         self._feed_loading_more: set[str] = set()
         self._did_initial_load = False
+        self._live_new: dict[str, set[int]] = {}
         self._thread_prefetch: dict[int, tuple[dict, float]] = {}
         self._prefetch_timer = None
 
@@ -184,6 +185,9 @@ class MainScreen(StaffTabMixin, Screen):
         if tabs.active != "tab-notifications":
             self._load_notifications()
         self.call_after_refresh(self._focus_active_table)
+        live = self.app.live
+        live.subscribe("/latest", lambda d: self._on_live_topics("latest", d))
+        live.subscribe("/new", lambda d: self._on_live_topics("new", d))
 
     def _focus_active_table(self) -> None:
         tab_id = self._current_tab_id()
@@ -368,6 +372,8 @@ class MainScreen(StaffTabMixin, Screen):
         self.app.call_from_thread(self._populate_feed, feed, topics, bool(more_url))
 
     def _populate_feed(self, feed: str, topics: list[dict], has_more: bool = False) -> None:
+        if self._live_new.pop(feed, None):
+            self._set_tab_badge(f"tab-{feed}", feed.capitalize(), 0)
         self._view_data[f"feed:{feed}"] = topics
         self._feed_page[feed] = 0
         self._feed_has_more[feed] = has_more
@@ -545,19 +551,31 @@ class MainScreen(StaffTabMixin, Screen):
         self._restore_cursor(t, prev)
         self._update_notif_badge()
 
-    def _update_notif_badge(self) -> None:
-        count = sum(1 for n in self._notifications_cache if not n.get("read"))
-        try:
-            from textual.widgets._tabbed_content import ContentTab
-            tab = self.query_one("#--content-tab-tab-notifications", ContentTab)
-            if count > 0:
-                tab.label = Text.assemble(
-                    "Notifications ", ("●", "bold yellow"), f" {count}"
-                )
-            else:
-                tab.label = "Notifications"
-        except Exception:  # noqa: BLE001
-            pass
+    def _update_notif_badge(self, count: int | None = None) -> None:
+        if count is None:
+            count = sum(1 for n in self._notifications_cache if not n.get("read"))
+        self._set_tab_badge("tab-notifications", "Notifications", count)
+
+    # --- live updates ---
+
+    def on_live_notification(self, data: dict) -> None:
+        count = data.get("all_unread_notifications_count")
+        if count is None:
+            count = (data.get("unread_notifications") or 0) + (data.get("unread_high_priority_notifications") or 0)
+        self._update_notif_badge(count)
+        if self._current_tab_id() == "tab-notifications":
+            self._load_notifications()
+
+    def on_live_review_count(self, data: dict) -> None:
+        if "reviewable_count" in data:
+            self._set_staff_counts({"review": int(data["reviewable_count"] or 0)})
+
+    def _on_live_topics(self, feed: str, data: dict) -> None:
+        tid = data.get("topic_id")
+        if not tid:
+            return
+        self._live_new.setdefault(feed, set()).add(tid)
+        self._set_tab_badge(f"tab-{feed}", feed.capitalize(), len(self._live_new[feed]), mark="↑")
 
     # --- search ---
     def on_input_submitted(self, event: Input.Submitted) -> None:

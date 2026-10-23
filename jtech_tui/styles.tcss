@@ -190,6 +190,12 @@ ModalScreen #menu-opts {
     max-height: 20;
 }
 
+/* Compact toasts: one short line, out of the way */
+Toast {
+    padding: 0 1;
+    max-width: 60;
+}
+
 /* Help modal body */
 #help-scroll {
     height: 1fr;
