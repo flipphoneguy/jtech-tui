@@ -9,6 +9,7 @@ from textual.screen import Screen
 from textual.widgets import DataTable, Header, LoadingIndicator, Static
 
 from ..api import ApiError
+from ..widgets import VimDataTable
 from .smart_footer import SmartFooter
 from .user_profile import UserProfileScreen
 
@@ -27,8 +28,6 @@ class LeaderboardScreen(Screen):
         Binding("escape", "back", "Back"),
         Binding("q", "back", "Back"),
         Binding("R", "reload", "Reload"),
-        Binding("]", "next_period", "Period →"),
-        Binding("[", "prev_period", "Period ←"),
     ]
 
     def __init__(self, leaderboard_id: int | None = None, period: str = "all") -> None:
@@ -41,11 +40,12 @@ class LeaderboardScreen(Screen):
         yield Header()
         yield Static("Leaderboard…", id="thread-header")
         yield LoadingIndicator(id="loader")
-        yield DataTable(id="tbl-lb", cursor_type="row", zebra_stripes=True)
+        yield VimDataTable(id="tbl-lb", cursor_type="row", zebra_stripes=True)
         yield SmartFooter()
 
     def on_mount(self) -> None:
-        t = self.query_one("#tbl-lb", DataTable)
+        t = self.query_one("#tbl-lb", VimDataTable)
+        t.sideways = lambda step: self.action_next_period() if step > 0 else self.action_prev_period()
         t.add_columns("#", "User", "Score")
         t.display = False
         self._resolve_id_and_fetch()
@@ -75,8 +75,7 @@ class LeaderboardScreen(Screen):
     def _header_text(self, name: str) -> str:
         if self._period_filter_disabled:
             return name
-        # Escape brackets so Rich/Textual doesn't interpret [/] as a markup tag.
-        return f"{name} · {self._period}   (\\[/\\] to change period)"
+        return f"{name} · {self._period}   (← → change period)"
 
     @work(thread=True, exclusive=True, group="lb-resolve")
     def _resolve_id_and_fetch(self) -> None:

@@ -7,8 +7,6 @@ from textual import events, on, work
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
-from textual.css.query import NoMatches
-from textual.message import Message
 from textual.screen import Screen
 from textual.widgets import (
     DataTable,
@@ -34,6 +32,7 @@ from .composer import (
     SearchModal,
 )
 from .leaderboard import LeaderboardScreen
+from ..widgets import VimDataTable
 from .staff_tab import StaffTabMixin
 from .thread import ThreadScreen, upload_and_copy
 
@@ -94,54 +93,9 @@ def _posts_cell(topic: dict) -> Text:
     return Text(str(total), style="dim")
 
 
-class VimDataTable(DataTable):
-    """DataTable with j/k/g/G, up-at-top-handoff, and request-more-on-bottom."""
-
-    class RequestMore(Message):
-        """Posted when the cursor is at the last row and the user tries to go further."""
-
-        def __init__(self, table: "VimDataTable") -> None:
-            super().__init__()
-            self.table = table
-
-    BINDINGS = [
-        Binding("j", "cursor_down", "Down", show=False),
-        Binding("k", "cursor_up", "Up", show=False),
-        Binding("g", "cursor_top", "Top", show=False),
-        Binding("G", "cursor_bottom", "Bottom", show=False),
-    ]
-
-    def action_cursor_top(self) -> None:
-        if self.row_count:
-            self.move_cursor(row=0)
-
-    def action_cursor_bottom(self) -> None:
-        if self.row_count:
-            self.move_cursor(row=self.row_count - 1)
-
-    def action_cursor_up(self) -> None:
-        if self.cursor_row == 0:
-            try:
-                tabs = self.screen.query_one(Tabs)
-            except NoMatches:
-                tabs = None
-            if tabs is not None:
-                tabs.focus()
-                return
-        super().action_cursor_up()
-
-    def action_cursor_down(self) -> None:
-        at_bottom = self.row_count and self.cursor_row >= self.row_count - 1
-        super().action_cursor_down()
-        if at_bottom:
-            self.post_message(self.RequestMore(self))
-
-
 class MainScreen(StaffTabMixin, Screen):
     BINDINGS = [
         Binding("ctrl+q", "app.quit", "Quit", priority=True),
-        Binding("right_square_bracket", "staff_next", "Staff section →", show=False),
-        Binding("left_square_bracket", "staff_prev", "Staff section ←", show=False),
         Binding("R", "reload", "Reload"),
         Binding("N", "new_topic", "New"),
         Binding("M", "new_pm", "New PM"),
@@ -151,6 +105,7 @@ class MainScreen(StaffTabMixin, Screen):
         Binding("ctrl+right", "next_tab", "Next tab", show=False),
         Binding("ctrl+left", "prev_tab", "Prev tab", show=False),
         Binding("down", "tabs_down", "", show=False),
+        Binding("up", "tabs_up", "", show=False),
         Binding("n", "next_unread", "Next unread", show=False),
         Binding("p", "prev_unread", "Prev unread", show=False),
     ]
@@ -208,6 +163,9 @@ class MainScreen(StaffTabMixin, Screen):
         self.query_one("#tbl-messages", DataTable).add_columns(" ", "Subject", "Posts", "Activity")
         self.query_one("#tbl-notifications", DataTable).add_columns("●", "Type", "From", "Title")
         self.query_one("#tbl-search", DataTable).add_columns("Title", "Blurb")
+
+        self.query_one("#tbl-staff", VimDataTable).sideways = self._staff_switch
+        self.query_one("#tbl-search", VimDataTable).up_target = lambda: self.query_one("#search-input")
 
         tabs = self.query_one("#tabs", TabbedContent)
         self._sync_staff_tabs()
@@ -343,11 +301,17 @@ class MainScreen(StaffTabMixin, Screen):
         self._load_for_tab(self._current_tab_id())
 
     def action_tabs_down(self) -> None:
-        """Fires when 'down' wasn't consumed by a widget — i.e. the tab bar
-        has focus. Hand focus off to the current table/input."""
+        """Fires when 'down' wasn't consumed by a widget: tab bar → current table/input, search box → results."""
         focused = self.focused
         if focused is None or isinstance(focused, Tabs):
             self._focus_active_table()
+        elif getattr(focused, "id", None) == "search-input":
+            self.query_one("#tbl-search").focus()
+
+    def action_tabs_up(self) -> None:
+        """Search box → tab bar."""
+        if getattr(self.focused, "id", None) == "search-input":
+            self.query_one(Tabs).focus()
 
     def _current_tab_id(self) -> str:
         return self.query_one("#tabs", TabbedContent).active or "tab-latest"

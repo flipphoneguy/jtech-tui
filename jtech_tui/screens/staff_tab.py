@@ -80,7 +80,7 @@ class StaffTabMixin:
             style = "bold reverse" if s == self._staff_section else "dim"
             t.append(f" {label}{f' ●{n}' if n else ''} ", style=style)
             t.append("  ")
-        t.append("  [ ] switch", style="dim")
+        t.append("  ← → switch", style="dim")
         try:
             self.query_one("#staff-sections", Static).update(t)
         except Exception:  # noqa: BLE001
