@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 import requests
 from requests.adapters import HTTPAdapter
 
-USER_AGENT = "jtech-tui/0.2 (+https://github.com/flipphoneguy/jtech-tui)"
+USER_AGENT = "jtech-tui/0.2.0 (+https://github.com/flipphoneguy/jtech-tui)"
 
 
 class ApiError(RuntimeError):

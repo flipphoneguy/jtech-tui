@@ -1,78 +1,28 @@
 # jtech-tui
 
-A terminal client for [jtech forums](https://forums.jtechforums.org) — and any
-other Discourse-powered site (but heavily customized for jtech) — built with
-[Textual](https://textual.textualize.io/).
-Browse feeds, read threads, reply, react, search, check notifications, send
-private messages, follow the gamification leaderboard, and much more — all
-without leaving your shell.
+A terminal client for [jtech forums](https://forums.jtechforums.org), built with [Textual](https://textual.textualize.io/). It speaks the regular Discourse API, so most of it works on other Discourse sites too, but it's made for jtech and knows about jtech's own plugin (whispers, REQ-PM, mod tools).
 
-> **Note on provenance.** A large portion of this project was written by an AI
-> coding assistant working against the public Discourse API. Expect rough edges
-> and bugs. Please file issues with reproduction steps and I'll fix what I can.
+Read and reply to threads, react, search, follow people, swap contact cards with REQ-PM, and, if you're on staff, moderate: all from a shell, with updates arriving live.
+
+> **Note on provenance.** A large portion of this project was written by an AI coding assistant working against the public Discourse API. Expect rough edges and bugs. Please file issues with reproduction steps and I'll fix what I can.
 
 ## Highlights
 
-- **Full feed coverage** — Latest, New, Top, Unseen, Categories, Messages,
-  Notifications and Search, each as its own tab.
-- **Notification badge** — unread notification count appears as a `● N` pip on
-  the Notifications tab label.
-- **Jump between unread** — `n` / `p` on a feed walks forward/backward through
-  topics with a `new` or `unread` state, in the list's display order.
-- **Background prefetch on hover** — moving the cursor over a feed row starts a
-  300 ms debounced thread fetch in the background so `enter` is instant. The
-  cache caps at 10 threads and never blocks the foreground feed.
-- **Proper thread view** — markdown rendering with syntax-highlighted code
-  blocks, `[quote=…]` blocks converted to real blockquotes, per-post reaction
-  summaries, a `#post_number` pill, and a `↱ replying to @user #N` breadcrumb.
-- **Resume-at-last-read** — a topic you've opened before lands you where you
-  stopped (first unread if there is one, otherwise the last post you saw),
-  matching the web UI. Threads you've never opened start at the top.
-- **Open at the right post from notifications** — tapping a notification opens
-  the thread centered on the linked reply, not the first post.
-- **Lazy-loaded posts** — long threads only render what you're reading; more
-  posts stream in above/below as you scroll. Posts above the landing position
-  start loading in the background the moment the thread opens, so scrolling
-  back is seamless. Scroll position stays pinned on the post you're reading
-  while new content mounts.
-- **Auto-collapse for long posts** — posts over 40 lines fold into a short
-  preview; `x` toggles.
-- **Compose in `$EDITOR` as `.md`** — new topics, replies, quote-replies and
-  PMs all drop you into your editor with proper markdown syntax highlighting.
-- **Reactions** — picker is hardcoded to the five reactions jtech forums
-  accepts (`ok_hand`, `man_shrugging`, `+1`, `folded_hands`, `laughing`).
-  Counts update in place with no reload. `l` opens a per-reaction panel
-  showing who reacted with what.
-- **Leaderboard** — the gamification-plugin boards at `/leaderboard/<id>`.
-  Period switches with `[` / `]` (daily, weekly, monthly, quarterly, yearly,
-  all); cycle between boards with `<` / `>`.
-- **Copy menu** — `Y` on a post picks between the post permalink and any code
-  blocks in the post; no code blocks → link copied directly.
-- **Open in browser** — `o` on a post hands off to `termux-open-url` /
-  `xdg-open` / `open` / `webbrowser`, opening on the exact post.
-- **Live refresh** — threads auto-poll every 30 s by default (`a` toggles).
-  The poll targets the tail of the loaded range so a dead thread won't spam
-  old posts into the view. Feeds refresh automatically when you back out of a
-  thread.
-- **Upload attachments** — `U` uploads a file via `/uploads.json` and copies
-  the resulting markdown to your clipboard.
-- **Remember me** — optional at login. Stores the password in plaintext in
-  the config so the client can silently re-authenticate when the session
-  cookie expires.
-- **Silent reauth** — when a session expires mid-session, the client
-  refreshes the cookie in the background (if remember-me is on) without
-  kicking you to the login screen.
-- **Vim-style navigation** — `j` / `k` / `g` / `G` everywhere. `↑` at the top
-  of a list hands focus to the tab bar without teleporting.
+- **Live updates.** The app listens on the same MessageBus channel the website uses. New replies show up in the thread you're reading within a second or two, the notification count updates by itself, and Latest/Unseen show how many new topics arrived. A small toast pops up for a few seconds when a notification comes in.
+- **A thread view that stays put.** Threads open on your first unread post and stay there while older posts load above. Posts are drawn line by line, so long threads stay fast.
+- **Posts look like posts.** Quotes show who wrote them, link previews show the site and title, code is highlighted, images show their name and size, spoilers stay hidden until you reveal them, polls show their results, and dates appear in your own timezone.
+- **Everything the server allows, nothing it doesn't.** Reactions, flag types, notification types and categories come from the forum itself. Edit, delete and every mod action are offered only when the server says you can do them.
+- **jtech's custom emoji.** `meh` and `jtechforums` render as small colored badges instead of `:meh:`.
+- **Moderation, for staff.** A Staff tab (review queue, staff notes, moderators inbox, staff log), post and topic menus, jtech whispers, and a user moderation screen. None of it appears for regular accounts.
+- **Profiles and REQ-PM.** Profiles with activity, top topics, badges and followers; follow people; set your status; request and share contact details.
+- **Compose in `$EDITOR`.** Topics, replies, quotes, whispers and edits all open in your editor as `.md`. If posting fails, your text is kept and comes back the next time you reply.
 
 ## Requirements
 
 - Python 3.10+
-- A Discourse forum with a username + password login (the client stores the
-  `_t` session cookie)
-- A clipboard helper on `PATH` for yank / copy-link / copy-code:
-  `termux-clipboard-set`, `pbcopy`, `wl-copy`, `xclip`, or `xsel`
-- `$EDITOR` (or `$VISUAL`) set for compose — falls back to `nano`
+- A jtech (or other Discourse) account with a username and password
+- For copying: `termux-clipboard-set`, `pbcopy`, `wl-copy`, `xclip`, `xsel` or `clip.exe`
+- `$EDITOR` (or `$VISUAL`) for writing; falls back to `nano`
 
 ## Install
 
@@ -85,146 +35,152 @@ pip install -e .
 ## Run
 
 ```sh
-jtech                 # opens your default feed
-jtech --feed latest   # override the starting tab
+jtech                   # opens your default tab
+jtech --feed unseen     # start on a specific tab
 ```
 
-Valid `--feed` values: `latest`, `new`, `top`, `unseen`, `categories`,
-`messages`, `notifications`.
+`--feed` takes `latest`, `unseen`, `categories`, `messages` or `notifications`.
 
-On first launch you'll be prompted for your forum URL, username and password.
-Tick "Remember me" if you want the client to re-login automatically after a
-cookie expiry. The session cookie (and optionally the password) is written to
-`~/.config/jtech-tui/config.json` with mode `0600`. Subsequent launches skip
-the login screen.
+The first launch asks for your username and password, plus a 2FA code if your account has one. Tick "Remember me" to let the app sign in again by itself when the session runs out.
+
+## Main screen
+
+Tabs: **Latest**, **Unseen** (new topics plus topics with unread replies), **Categories** (as a tree), **Messages**, **Notifications**, **Staff** (staff only) and **Search**.
+
+Each topic shows ✓ solved, 📌 pinned, 🔒 closed and 🔥 hot markers, with a second line for category, tags, last poster and likes.
+
+| Key | Action |
+|---|---|
+| `tab` / `shift+tab`, `←` / `→` on the tab bar | Switch tabs |
+| `↓` from the tab bar, `↑` at the top of a list | Move between the tab bar and the list |
+| `j` / `k`, `g` / `G` | Down / up, top / bottom |
+| `n` / `p` | Next / previous unread topic |
+| `enter` | Open |
+| `f` | Filter Latest or Unseen by category or tag; on Search, open the filter menu |
+| `w` | Watch, track, normal or mute the highlighted topic |
+| `D` | Dismiss everything on Unseen |
+| `/` | Search |
+| `N` / `M` | New topic / new private message |
+| `P` | Your profile |
+| `L` | Leaderboard |
+| `U` | Upload a file (its markdown goes to the clipboard) |
+| `R` | Reload |
+| `?` | All keys for the current screen |
+| `ctrl+q` | Quit |
+
+Scrolling to the bottom of a list loads the next page.
+
+**Search.** Type a query and press enter. `ctrl+f` (or `f` from the results) opens a filter menu for category, user, tag, date range, titles only, solved or unsolved, and sort order. It writes the site's search syntax into the box (`#phones @dov tags:android after:2026-01-01 order:latest`), so you can also type it directly. Opening a result lands on the matching post. In the search box, `↑` goes to the tab bar and `↓` to the results.
+
+## Thread view
+
+| Key | Action |
+|---|---|
+| `j` / `k` | Next / previous post (scrolls within long posts first) |
+| `space` / `b` | Page down / up |
+| `g` / `G` | First / last post of the topic |
+| `#` | Jump to a post number |
+| `/` | Find in this topic |
+| `p` | Go to the post this one replies to |
+| `r` / `t` | Reply to the post / to the topic |
+| `Q` | Quote reply |
+| `enter` or `+` | React (numbers 1–9 pick in the menu; choosing your own reaction removes it) |
+| `l` | Who reacted |
+| `L` | Links in the post (forum links open in the app, others in the browser) |
+| `y` | Copy the post's markdown |
+| `Y` | Copy menu: post link, any code block, or any link |
+| `o` | Open the post in the browser |
+| `u` | Author's profile |
+| `x` | Collapse or expand a long post |
+| `S` | Reveal spoilers and expand hidden sections |
+| `E` / `D` | Edit / delete (when allowed; editing someone else's post asks for a reason) |
+| `!` | Flag |
+| `a` | Turn live updates for this thread on or off |
+| `e` | Open the loaded posts in `$EDITOR`, read-only |
+| `U` | Upload a file |
+| `R` | Reload |
+| `esc` / `q` | Back |
+
+The header shows the category, tags, state (closed, solved, unlisted) and where you are, like `166/426`.
+
+## People
+
+Open a profile with `u` on a post, `P` for your own, or from any list of users.
+
+| Key | Action |
+|---|---|
+| `←` / `→` | Activity, Topics, Replies, Badges, Followers, Following, Bio |
+| `enter` | Open the post, topic, badge or user |
+| `f` | Follow / unfollow |
+| `c` | REQ-PM with this user (on your own profile: your REQ-PM inbox) |
+| `s` | Set or clear your status (your own profile) |
+| `m` | Moderate this user (staff) |
+| `o` | Open in the browser |
+
+**REQ-PM** (jtech's contact exchange). On someone's page: `r` asks for their details (you can tick which kinds), `s` sends yours (you pick which), `x` cancels your request, `d` declines theirs. Your inbox has Requests, Contacts, Shared with, My requests and My card; `enter` on a contact copies it.
+
+## For staff
+
+Everything here appears only when you're signed in as staff, and each item only when the server allows it.
+
+**Staff tab** (`←` / `→` switch sections): **Review** (the review queue), **Notes** (jtech's staff notes and events feed), **Mod inbox** (the moderators group messages) and **Log** (staff actions). The tab badge counts pending reviews plus unread notes, live.
+
+In a review item, `enter` shows the available actions. Ones that need a form on the website (suspend, silence, delete user) open the website instead.
+
+**In a thread**
+
+| Key | Action |
+|---|---|
+| `m` | Post menu: edit with reason, delete or recover, turn into a whisper or back, change the whisper's audience, add someone to it, see who's read it, pin to the bottom of the topic, wiki, change owner, move to another topic, edit history, flags, user tools |
+| `M` | Topic menu: close, pin (in category or globally, until a date), unlist, archive, title, category, tags, slow mode, timers, footer message, merge, delete or recover |
+| `w` | Whisper reply. Asks who it's for first (`@user, moderators, badge:Name`; empty means staff only). Whispers show a 🔒 label and their audience. |
+
+**User moderation** (`m` on a profile, or from the post menu): state, penalty history, flags and staff notes, with `n` add note, `s` silence, `S` suspend, `L` lift a penalty.
+
+## Leaderboard
+
+`←` / `→` change the period (all time, yearly, quarterly, monthly, weekly, daily). `enter` opens a profile.
 
 ## Configuration
 
-`~/.config/jtech-tui/config.json`:
+`~/.config/jtech-tui/config.json` (mode `0600`):
 
-| Field            | Default                              | Purpose                                         |
-|------------------|--------------------------------------|-------------------------------------------------|
-| `forum_url`      | `https://forums.jtechforums.org`     | Base URL of the Discourse site.                 |
-| `default_feed`   | `latest`                             | Tab to open when `--feed` is not passed.        |
-| `session_cookie` | *(empty)*                            | Discourse `_t` cookie. Cleared on reauth.       |
-| `username`       | *(empty)*                            | Cached for ownership checks on edit/delete.    |
-| `password`       | *(empty)*                            | Plaintext; only written if "Remember me" is on. |
+| Field | Default | Purpose |
+|---|---|---|
+| `forum_url` | `https://forums.jtechforums.org` | The Discourse site |
+| `default_feed` | `latest` | Tab to open when `--feed` isn't given |
+| `session_cookie` | | Your session; kept up to date as the forum rotates it |
+| `username` | | Your username |
+| `password` | | Only saved with "Remember me", in plain text |
 
-Point the client at a different Discourse host by editing `forum_url` and
-clearing `session_cookie` so you get a fresh login prompt.
+Forum data that rarely changes (categories, emoji, notification types) is cached in `~/.cache/jtech-tui/<host>/` and refreshed in the background.
 
-## Keys
+To use another Discourse site, change `forum_url` and clear `session_cookie`.
 
-### Main screen
-
-| Key                            | Action                                    |
-|--------------------------------|-------------------------------------------|
-| `tab` / `shift+tab`, `←` / `→` | Switch tabs                               |
-| `↓` on a tab                   | Focus the current list                    |
-| `↑` at the top of a list       | Back to the tab bar                       |
-| `j` / `k`                      | Move cursor down / up                     |
-| `g` / `G`                      | Jump to top / bottom of the list          |
-| `n` / `p`                      | Next / previous unread topic in this feed |
-| `enter`                        | Open the selected row                     |
-| `/`                            | Open the search modal                     |
-| `N`                            | New topic                                 |
-| `M`                            | New private message                       |
-| `U`                            | Upload a file                             |
-| `L`                            | Open the leaderboard                      |
-| `R`                            | Reload the current tab                    |
-| `ctrl+q`                       | Quit                                      |
-| `?`                            | Show the full key list for this screen    |
-
-Reaching the bottom of a feed triggers a page fetch, so you get infinite-scroll
-without a separate action. Moving the cursor over a row kicks off a background
-prefetch of that thread so the next `enter` is instant.
-
-### Thread view
-
-| Key              | Action                                                       |
-|------------------|--------------------------------------------------------------|
-| `j` / `k`        | Next / previous post (scrolls within the post first if long) |
-| `g` / `G`        | Jump to the first / last post in the full topic              |
-| `enter`          | Open the reaction picker on the highlighted post             |
-| `r`              | Reply (threaded under the highlighted post if any)           |
-| `t`              | Reply to the topic (never threaded)                          |
-| `Q`              | Quote-reply — opens `$EDITOR` with a `[quote=…]` prefilled   |
-| `y`              | Copy the highlighted post's raw markdown                     |
-| `Y`              | Copy menu — pick between post link and any code blocks       |
-| `o`              | Open the highlighted post in your browser                    |
-| `p`              | Jump to the post this one is replying to                     |
-| `l`              | Show who reacted to the highlighted post (per reaction)      |
-| `x`              | Toggle collapse on the highlighted post                      |
-| `u`              | Open the author's profile                                    |
-| `+` / `ctrl+r`   | React to the highlighted post                                |
-| `E`              | Edit your own post (opens `$EDITOR`)                         |
-| `D`              | Delete your own post (with confirmation)                     |
-| `a`              | Toggle auto-refresh (on by default, polls every 30 s)        |
-| `e`              | Open the full thread in `$EDITOR` as read-only `.md`         |
-| `U`              | Upload a file and get its markdown on the clipboard          |
-| `R`              | Hard-reload the thread                                       |
-| `esc` / `q`      | Back to the previous screen                                  |
-
-### Leaderboard
-
-| Key         | Action                                   |
-|-------------|------------------------------------------|
-| `[` / `]`   | Previous / next period                   |
-| `<` / `>`   | Previous / next leaderboard (when > 1)   |
-| `enter`     | Open the selected user's profile         |
-| `R`         | Reload                                   |
-| `esc` / `q` | Back                                     |
-
-## Architecture
+## Layout
 
 ```
 jtech_tui/
-├── api.py            # Thin Discourse client (requests.Session, CSRF, JSON)
-├── app.py            # Textual App + argparse entrypoint + silent reauth
-├── config.py         # ~/.config/jtech-tui/config.json (dataclass)
-├── editor.py         # $EDITOR round-trip with a temporary .md file
-├── styles.tcss       # Textual CSS
-└── screens/
-    ├── login.py         # Login modal (with Remember me)
-    ├── main.py          # Tabbed top-level (feeds, categories, PMs, …)
-    ├── thread.py        # Thread view, lazy posts, reactions, composer
-    ├── composer.py      # Shared modal dialogs + hardcoded reaction list
-    ├── leaderboard.py   # Gamification plugin viewer
-    ├── user_profile.py  # User bio + recent activity
-    └── smart_footer.py  # Footer that truncates to "? all keys"
+├── api/              Discourse client: requests, errors, endpoints (topics, posts, users, mod, jtech plugin)
+├── site.py           What the forum and your account allow; emoji names; disk cache
+├── live.py           MessageBus long polling
+├── render/           Post HTML to terminal text
+├── widgets/          Thread view and list widgets
+├── screens/          Main tabs, thread, profile, REQ-PM, staff, review, search, login, dialogs
+├── editor.py         $EDITOR round trip
+└── styles.tcss       Styling
 ```
-
-All network calls run in `textual.work` threads so the UI never blocks; results
-are marshalled back with `call_from_thread`.
 
 ## Known limitations
 
-- **Gamification plugin required** for the leaderboard feature. Without it the
-  screen shows "Load failed".
-- **discourse-reactions plugin required** for reactions. Posts on sites
-  without it will return an error when you try to react.
-- **Images** render as placeholder markdown, not actual pixels — terminals
-  generally can't display images without extra setup, so this is a deliberate
-  omission.
-- **Drafts** are not persisted: quitting `$EDITOR` without writing discards
-  the buffer.
-- **Remember me is plaintext.** The password is stored unencrypted in
-  `config.json`. The file is `0600` but anyone with read access to your home
-  dir can read it — enable this only on trusted machines.
-- **Infinite scroll** is per-tab and resets on resume (so read state stays
-  accurate after you come back from a thread).
+- Images aren't drawn; they appear as a line with their name and size, and open in the browser.
+- Remember-me stores the password in plain text (the file is `0600`).
+- Following, REQ-PM requests and shares, flagging and review actions notify other people, so they haven't been exercised much on the live forum yet.
 
 ## Contributing
 
-Issues and pull requests welcome. If you're filing a bug, please include:
-
-- The forum URL (if it's a public site)
-- Output of `python --version` and `pip show textual`
-- The traceback, if any, and the steps to reproduce
-
-Run the app from source with `pip install -e .` then `jtech`. There are no
-tests yet; adding some is a welcome contribution.
+Issues and pull requests are welcome. For bugs, please include the forum URL (if public), `python --version`, `pip show textual`, the traceback if there is one, and steps to reproduce.
 
 ## License
 
-GPL-3 See `LICENSE`
+GPL-3. See `LICENSE`.

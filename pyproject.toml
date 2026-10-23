@@ -1,7 +1,7 @@
 [project]
 name = "jtech-tui"
-version = "0.1.0"
-description = "Beautiful Python TUI for jtech (Discourse) forums"
+version = "0.2.0"
+description = "Terminal client for jtech forums (Discourse), with live updates and mod tools"
 requires-python = ">=3.10"
 license = "GPL-3.0-or-later"
 dependencies = [
