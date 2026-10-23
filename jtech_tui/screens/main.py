@@ -20,6 +20,7 @@ from textual.widgets import (
 
 from .smart_footer import SmartFooter
 
+from ..render import plain_text
 from ..util import time_ago as _pretty_time, truncate as _truncate
 
 from ..api import ApiError
@@ -100,19 +101,43 @@ def _title_cell(topic: dict, width: int, site=None) -> Text:
     t.append(_truncate(topic.get("title", ""), max(5, width - t.cell_len)), style=style)
     if site is None:
         return t
-    bits: list[str] = []
-    cat = site.category_label(topic.get("category_id"))
-    if cat:
-        bits.append(cat)
-    tags = [x if isinstance(x, str) else x.get("name", "") for x in topic.get("tags") or []]
-    if tags:
-        bits.append(" ".join(f"#{x}" for x in tags[:4]))
-    if topic.get("last_poster_username"):
-        bits.append(f"@{topic['last_poster_username']}")
-    if topic.get("like_count"):
-        bits.append(f"♥ {topic['like_count']}")
-    t.append("\n  " + _truncate(" · ".join(bits), max(5, width - 2)), style="dim italic")
+    t.append("\n  ")
+    t.append_text(_meta_line(topic, site, max(10, width - 2)))
     return t
+
+
+def _meta_line(topic: dict, site, width: int) -> Text:
+    """Category · tags · @poster · ♥ likes, each part shortened within its own budget so none crowds out the rest."""
+    sep = " · "
+    likes = f"♥ {topic['like_count']}" if topic.get("like_count") else ""
+    poster = f"@{topic['last_poster_username']}" if topic.get("last_poster_username") else ""
+    tags = " ".join(
+        f"#{x if isinstance(x, str) else x.get('name', '')}" for x in topic.get("tags") or []
+    )
+    cat = site.category_label(topic.get("category_id"))
+    # Fixed parts first, then split what's left between category and tags.
+    poster = _truncate(poster, 16)
+    fixed = sum(len(p) + len(sep) for p in (likes, poster) if p)
+    room = max(0, width - fixed)
+    if cat and tags:
+        cat_w = max(8, min(len(cat), room // 2 if len(tags) > room // 2 else room - len(tags) - len(sep)))
+        tag_w = max(0, room - cat_w - len(sep))
+    else:
+        cat_w = tag_w = room
+    parts = [
+        (_truncate(cat, cat_w), "italic"),
+        (_truncate(tags, tag_w) if tag_w >= 4 else "", "#9a86c8"),
+        (poster, ""),
+        (likes, ""),
+    ]
+    out = Text(style="dim")
+    for text, style in parts:
+        if not text:
+            continue
+        if out.plain:
+            out.append(sep)
+        out.append(text, style=style)
+    return out
 
 
 def _posts_cell(topic: dict) -> Text:
@@ -531,17 +556,32 @@ class MainScreen(StaffTabMixin, Screen):
         prev = t.cursor_row
         t.clear()
         total = self.size.width or 80
-        # Reserve: name column ~20 + topics ~6 + padding ~6
-        desc_w = max(10, total - 32)
+        name_w = 30
+        desc_w = max(10, total - name_w - 14)
+        # Parents in the server's order, each followed by its subcategories.
+        by_parent: dict[int | None, list[dict]] = {}
         for c in cats:
+            by_parent.setdefault(c.get("parent_category_id"), []).append(c)
+        for kids in by_parent.values():
+            kids.sort(key=lambda c: (c.get("position") or 0, c.get("name", "")))
+        ids = {c["id"] for c in cats}
+        roots = [c for c in cats if c.get("parent_category_id") not in ids]
+
+        def add(c: dict, lead: str, kids_lead: str) -> None:
+            """``lead`` goes before this row's name; ``kids_lead`` before its children's branches."""
             key = f"cat:{c.get('id')}"
             self._topic_cache[key] = c
-            t.add_row(
-                _truncate(c.get("name", ""), 20),
-                str(c.get("topic_count", 0)),
-                _truncate((c.get("description") or ""), desc_w),
-                key=key,
-            )
+            name = Text(lead, style="dim")
+            name.append(_truncate(c.get("name", ""), name_w - len(lead)), style="" if lead else "bold")
+            desc = plain_text(c.get("description") or c.get("description_text") or "")
+            t.add_row(name, str(c.get("topic_count", 0)), Text(_truncate(desc, desc_w), style="dim"), key=key)
+            kids = by_parent.get(c["id"], [])
+            for i, kid in enumerate(kids):
+                last = i == len(kids) - 1
+                add(kid, kids_lead + ("└ " if last else "├ "), kids_lead + ("  " if last else "│ "))
+
+        for root in roots:
+            add(root, "", "")
         self._restore_cursor(t, prev)
 
     # --- messages (PMs) ---

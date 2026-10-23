@@ -30,8 +30,16 @@ class TopicsMixin(BaseClient):
         return self.topic_list(f"/tag/{quote(tag)}", page)
 
     def categories(self) -> list[dict]:
+        """Every category the user can see, subcategories included."""
         d = self.get("/categories.json", params={"include_subcategories": "true"})
-        return (d.get("category_list") or {}).get("categories") or []
+        cats = (d.get("category_list") or {}).get("categories") or []
+        # Lazy-loaded sites leave some subcategories out; fetch them by id.
+        have = {c["id"] for c in cats}
+        missing = sorted({i for c in cats for i in c.get("subcategory_ids") or []} - have)
+        if missing:
+            found = self.get("/categories/find.json", params=[("ids[]", i) for i in missing])
+            cats += found.get("categories") or []
+        return cats
 
     def private_messages(self, username: str, box: str = "") -> dict:
         suffix = f"-{box}" if box else ""
