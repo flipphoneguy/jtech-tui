@@ -14,7 +14,7 @@ from textual.widgets import (
     DataTable,
     Header,
     Input,
-    Tab,
+    Static,
     TabbedContent,
     TabPane,
     Tabs,
@@ -34,7 +34,7 @@ from .composer import (
     SearchModal,
 )
 from .leaderboard import LeaderboardScreen
-from .review import TYPE_LABELS, ReviewData, ReviewItemScreen
+from .staff_tab import StaffTabMixin
 from .thread import ThreadScreen, upload_and_copy
 
 
@@ -44,7 +44,7 @@ TAB_ORDER = (
     "tab-categories",
     "tab-messages",
     "tab-notifications",
-    "tab-review",
+    "tab-staff",
     "tab-search",
 )
 
@@ -137,9 +137,11 @@ class VimDataTable(DataTable):
             self.post_message(self.RequestMore(self))
 
 
-class MainScreen(Screen):
+class MainScreen(StaffTabMixin, Screen):
     BINDINGS = [
         Binding("ctrl+q", "app.quit", "Quit", priority=True),
+        Binding("right_square_bracket", "staff_next", "Staff section →", show=False),
+        Binding("left_square_bracket", "staff_prev", "Staff section ←", show=False),
         Binding("R", "reload", "Reload"),
         Binding("N", "new_topic", "New"),
         Binding("M", "new_pm", "New PM"),
@@ -187,8 +189,10 @@ class MainScreen(Screen):
                 yield VimDataTable(id="tbl-messages", cursor_type="row", zebra_stripes=True)
             with TabPane("Notifications", id="tab-notifications"):
                 yield VimDataTable(id="tbl-notifications", cursor_type="row", zebra_stripes=True)
-            with TabPane("Review", id="tab-review"):
-                yield VimDataTable(id="tbl-review", cursor_type="row", zebra_stripes=True)
+            with TabPane("Staff", id="tab-staff"):
+                with Vertical():
+                    yield Static(id="staff-sections")
+                    yield VimDataTable(id="tbl-staff", cursor_type="row", zebra_stripes=True)
             with TabPane("Search", id="tab-search"):
                 with Vertical():
                     yield Input(placeholder="Type query, press enter…", id="search-input")
@@ -203,7 +207,6 @@ class MainScreen(Screen):
         self.query_one("#tbl-categories", DataTable).add_columns("Category", "Topics", "Description")
         self.query_one("#tbl-messages", DataTable).add_columns(" ", "Subject", "Posts", "Activity")
         self.query_one("#tbl-notifications", DataTable).add_columns("●", "Type", "From", "Title")
-        self.query_one("#tbl-review", DataTable).add_columns("Type", "Reason", "Author", "What", "Age")
         self.query_one("#tbl-search", DataTable).add_columns("Title", "Blurb")
 
         tabs = self.query_one("#tabs", TabbedContent)
@@ -223,68 +226,6 @@ class MainScreen(Screen):
         if tabs.active != "tab-notifications":
             self._load_notifications()
         self.call_after_refresh(self._focus_active_table)
-
-    # --- staff ---
-
-    def _sync_staff_tabs(self) -> None:
-        tabs = self.query_one("#tabs", TabbedContent)
-        if self.app.site.can_review:
-            tabs.show_tab("tab-review")
-            self._load_review_count()
-        else:
-            tabs.hide_tab("tab-review")
-
-    def on_site_ready(self) -> None:
-        self._sync_staff_tabs()
-
-    @work(thread=True, exclusive=True, group="review-count")
-    def _load_review_count(self) -> None:
-        try:
-            n = self.app.client.review_count()
-        except ApiError:
-            return
-        self.app.call_from_thread(self._set_tab_badge, "tab-review", "Review", n)
-
-    def _set_tab_badge(self, tab_id: str, label: str, count: int) -> None:
-        try:
-            from textual.widgets._tabbed_content import ContentTab
-
-            tab = self.query_one(f"#--content-tab-{tab_id}", ContentTab)
-        except Exception:  # noqa: BLE001
-            return
-        tab.label = Text.assemble(f"{label} ", ("●", "bold yellow"), f" {count}") if count else label
-
-    @work(thread=True, exclusive=True, group="review")
-    def _load_review(self) -> None:
-        try:
-            d = self.app.client.reviewables("pending")
-        except ApiError as e:
-            self.app.call_from_thread(self.app.report_error, e, "Review")
-            return
-        self.app.call_from_thread(self._populate_review, d)
-
-    def _populate_review(self, d: dict) -> None:
-        self._view_data["review"] = d
-        rd = ReviewData(d)
-        self._review = rd
-        t = self.query_one("#tbl-review", DataTable)
-        prev = t.cursor_row
-        t.clear()
-        what_w = self._title_width(right_reserved=46)
-        for it in rd.items:
-            key = f"rev:{it['id']}"
-            t.add_row(
-                Text(TYPE_LABELS.get(it.get("type", ""), it.get("type", "")), style="bold"),
-                _truncate(", ".join(rd.reasons(it)) or "-", 14),
-                _truncate("@" + (rd.author(it) or "?"), 16),
-                _truncate(rd.title(it), what_w),
-                _pretty_time(it.get("created_at")),
-                key=key,
-            )
-        if not rd.items:
-            t.add_row("", "", "", Text("Nothing to review.", style="dim"), "", key="rev:none")
-        self._restore_cursor(t, prev)
-        self._set_tab_badge("tab-review", "Review", len(rd.items))
 
     def _focus_active_table(self) -> None:
         tab_id = self._current_tab_id()
@@ -324,8 +265,9 @@ class MainScreen(Screen):
                 self._populate_notifications(data)
             elif key == "search":
                 self._populate_search(data)
-            elif key == "review":
-                self._populate_review(data)
+        staff = self._staff_data.get(self._staff_section)
+        if staff is not None:
+            self._populate_staff(self._staff_section, staff)
 
     # --- prefetch on hover ---
     @on(DataTable.RowHighlighted)
@@ -411,7 +353,7 @@ class MainScreen(Screen):
         return self.query_one("#tabs", TabbedContent).active or "tab-latest"
 
     def _tab_cycle(self) -> list[str]:
-        return [t for t in TAB_ORDER if t != "tab-review" or self.app.site.can_review]
+        return [t for t in TAB_ORDER if t != "tab-staff" or self.app.site.is_staff]
 
     def action_next_tab(self) -> None:
         tabs = self.query_one("#tabs", TabbedContent)
@@ -446,8 +388,8 @@ class MainScreen(Screen):
             self._load_messages()
         elif tab_id == "tab-notifications":
             self._load_notifications()
-        elif tab_id == "tab-review":
-            self._load_review()
+        elif tab_id == "tab-staff":
+            self._load_staff()
 
     # --- feeds ---
     @work(thread=True, exclusive=True, group="feed")
@@ -727,11 +669,8 @@ class MainScreen(Screen):
                 post_number = notif.get("post_number")
                 target = post_number if isinstance(post_number, int) and post_number > 0 else None
                 self.app.push_screen(ThreadScreen(topic, target_post=target))
-        elif key.startswith("rev:") and key != "rev:none":
-            rd = getattr(self, "_review", None)
-            item = next((i for i in rd.items if f"rev:{i['id']}" == key), None) if rd else None
-            if item:
-                self.app.push_screen(ReviewItemScreen(item, rd))
+        else:
+            self._staff_row_selected(key)
 
     # --- compose actions ---
     def action_search(self) -> None:

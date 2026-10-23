@@ -46,8 +46,11 @@ class JtechMixin(BaseClient):
         """footer_message, pinned_post_id (0 to clear), reply_prompt, require_reply_approval…"""
         return self.put(f"{MOD}/topic/{topic_id}", fields)
 
-    def notes_feed(self) -> dict:
-        return self.get(f"{MOD}/notes-feed")
+    def notes_feed(self) -> list[dict]:
+        return self.get(f"{MOD}/notes-feed").get("notes") or []
+
+    def notes_feed_seen(self) -> None:
+        self.post(f"{MOD}/notes-feed/seen")
 
     def badges(self) -> list[dict]:
         return self.get("/badges.json").get("badges") or []
