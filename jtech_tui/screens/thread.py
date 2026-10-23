@@ -95,6 +95,8 @@ class ThreadScreen(SolvedPollsMixin, ThreadModMixin, Screen):
         self._data: dict = {}
         self._ids: list[int] = []
         self._loading: set[str] = set()
+        # Bumped whenever the view is replaced, so stale chunk loads can be dropped.
+        self._gen = 0
         self._auto = None
         self._seen_buf: set[int] = set()
         self._seen_timer = None
@@ -181,6 +183,8 @@ class ThreadScreen(SolvedPollsMixin, ThreadModMixin, Screen):
         self.app.report_error(e, "Load")
 
     def _show(self, data: dict, target: int | None) -> None:
+        self._gen += 1
+        self._loading.clear()
         self._data = data
         self.app.site.set_reactions(data.get("valid_reactions"))
         ps = data.get("post_stream") or {}
@@ -282,22 +286,27 @@ class ThreadScreen(SolvedPollsMixin, ThreadModMixin, Screen):
         if not ids:
             return
         self._loading.add(d)
-        self._fetch_more(d, ids)
+        self._fetch_more(d, ids, self._gen)
 
     @work(thread=True, group="more")
-    def _fetch_more(self, direction: str, ids: list[int]) -> None:
+    def _fetch_more(self, direction: str, ids: list[int], gen: int) -> None:
         try:
             posts = self.app.client.posts_by_ids(self._tid, ids)
         except ApiError as e:
-            self.app.call_from_thread(self._more_failed, direction, e)
+            self.app.call_from_thread(self._more_failed, direction, e, gen)
             return
-        self.app.call_from_thread(self._got_more, direction, posts)
+        self.app.call_from_thread(self._got_more, direction, posts, gen)
 
-    def _more_failed(self, direction: str, e: Exception) -> None:
+    def _more_failed(self, direction: str, e: Exception, gen: int) -> None:
+        if gen != self._gen:
+            return
         self._loading.discard(direction)
         self.app.report_error(e, "Load")
 
-    def _got_more(self, direction: str, posts: list[dict]) -> None:
+    def _got_more(self, direction: str, posts: list[dict], gen: int) -> None:
+        # A reload or jump since the request replaced the view; these posts would leave a gap in it.
+        if gen != self._gen:
+            return
         self._loading.discard(direction)
         self.stream.add_posts(posts)
         self._update_edges()
@@ -479,9 +488,7 @@ class ThreadScreen(SolvedPollsMixin, ThreadModMixin, Screen):
     # --- composing ---
 
     def _compose_and_send(self, template: str, reply_to: int | None, *, key: str) -> None:
-        unsent = getattr(self.app, "unsent", {})
-        self.app.unsent = unsent
-        prev = unsent.pop(key, None)
+        prev = self.app.unsent.pop(key, None)
         with self.app.suspend():
             content = edit_markdown(prev or template)
         if content is None:

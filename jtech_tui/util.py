@@ -70,6 +70,10 @@ def parse_when(s: str) -> datetime | None:
     return t if t.tzinfo else t.astimezone()
 
 
+# /t/slug/123/4 or /t/123/4; a slug always has a non-digit, so /t/123/4 is topic 123, post 4.
+_TOPIC_PATH = re.compile(r"/t/(?:[^/]*[^\d/][^/]*/)?(\d+)(?:/(\d+))?")
+
+
 def internal_target(url: str, base_url: str) -> tuple[str, object, int | None] | None:
     """Classify a forum link: ``("topic", id, post_number)``, ``("user", name, None)`` or None if external.
 
@@ -83,7 +87,7 @@ def internal_target(url: str, base_url: str) -> tuple[str, object, int | None] |
     if host and host != base_host and not base_host.endswith("." + host):
         return None
     path = u.path
-    m = re.match(r"/t/(?:[^/]+/)?(\d+)(?:/(\d+))?", path)
+    m = _TOPIC_PATH.match(path)
     if m:
         return "topic", int(m.group(1)), int(m.group(2)) if m.group(2) else None
     m = re.match(r"/u/([^/?#]+)", path)
@@ -97,7 +101,7 @@ def topic_id_from(s: str) -> int | None:
     s = s.strip()
     if s.isdigit():
         return int(s)
-    m = re.search(r"/t/(?:[^/]+/)?(\d+)", s)
+    m = _TOPIC_PATH.search(s)
     return int(m.group(1)) if m else None
 
 

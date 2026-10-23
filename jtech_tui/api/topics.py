@@ -54,6 +54,13 @@ class TopicsMixin(BaseClient):
             payload["category_id"] = category_id
         self.put("/topics/reset-new", payload)
 
+    def dismiss_topic_ids(self, topic_ids: list[int]) -> None:
+        """Dismiss only these topics: new ones stop being new, unread replies are marked read."""
+        if not topic_ids:
+            return
+        for op in ("dismiss_topics", "dismiss_posts"):
+            self.put("/topics/bulk", {"topic_ids": topic_ids, "operation": {"type": op}})
+
     # --- a single topic ---
 
     def topic(self, tid: int, near_post: int | None = None) -> dict:

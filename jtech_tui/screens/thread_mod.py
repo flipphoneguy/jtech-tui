@@ -434,8 +434,9 @@ class ThreadModMixin:
     def _whisper_compose(self, aud: Audience, reply_to: int | None) -> None:
         who = ", ".join(aud.labels) or "staff only"
         hint = f"<!-- 🔒 whisper to {who}; save & quit to send -->\n\n"
+        prev = self.app.unsent.pop(f"{self._tid}:w{reply_to}", None)
         with self.app.suspend():
-            content = edit_markdown(hint)
+            content = edit_markdown(hint + prev if prev else hint)
         if content is None:
             return
         from .thread import strip_template
@@ -452,7 +453,12 @@ class ThreadModMixin:
             post = self.app.client.reply(self._tid, body, reply_to, extra=extra)
         except ApiError as e:
             self.app.unsent[f"{self._tid}:w{reply_to}"] = body
-            self.app.call_from_thread(self.app.report_error, e, "Whisper")
+            self.app.call_from_thread(
+                self.app.notify,
+                f"Whisper failed: {e}. Your text is kept; whisper again to reopen it.",
+                severity="error",
+                timeout=10,
+            )
             return
         self.app.call_from_thread(self._replied, post)
 

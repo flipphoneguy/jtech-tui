@@ -32,6 +32,8 @@ class JtechApp(App):
         self.site = Site(self.client.host)
         self.site.load_cache()
         self.live = LiveBus(self)
+        # Text of posts that failed to send, keyed by where they were going; reopened on the next try.
+        self.unsent: dict[str, str] = {}
         self._live_user: int | None = None
         self._last_toast_id = 0
 

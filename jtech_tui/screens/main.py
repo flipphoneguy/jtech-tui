@@ -290,15 +290,14 @@ class MainScreen(StaffTabMixin, SearchTabMixin, Screen):
         """Re-render cached views so truncation adapts to the new width."""
         for key, data in list(self._view_data.items()):
             if key.startswith("feed:"):
-                self._populate_feed(key[5:], data)
+                self._populate_feed(key[5:], data, redraw=True)
             elif key == "cats":
                 self._populate_categories(data)
             elif key == "messages":
                 self._populate_messages(data)
             elif key == "notifs":
                 self._populate_notifications(data)
-            elif key == "search":
-                self._populate_search(data)
+        self._rebuild_search()
         staff = self._staff_data.get(self._staff_section)
         if staff is not None:
             self._populate_staff(self._staff_section, staff)
@@ -465,13 +464,15 @@ class MainScreen(StaffTabMixin, SearchTabMixin, Screen):
             return
         self.app.call_from_thread(self._populate_feed, feed, topics, more)
 
-    def _populate_feed(self, feed: str, topics: list[dict], has_more: bool = False) -> None:
-        self._live_new.pop(feed, None)
-        self._set_tab_badge(f"tab-{feed}", self._feed_label(feed), 0)
+    def _populate_feed(self, feed: str, topics: list[dict], has_more: bool = False, *, redraw: bool = False) -> None:
+        """Show a freshly loaded first page, or with ``redraw`` just re-render what's loaded (on resize)."""
+        if not redraw:
+            self._live_new.pop(feed, None)
+            self._set_tab_badge(f"tab-{feed}", self._feed_label(feed), 0)
+            self._feed_page[feed] = 0
+            self._feed_has_more[feed] = has_more
+            self._feed_loading_more.discard(feed)
         self._view_data[f"feed:{feed}"] = topics
-        self._feed_page[feed] = 0
-        self._feed_has_more[feed] = has_more
-        self._feed_loading_more.discard(feed)
         t = self.query_one(f"#tbl-{feed}", DataTable)
         prev = t.cursor_row
         t.clear()
@@ -755,19 +756,34 @@ class MainScreen(StaffTabMixin, SearchTabMixin, Screen):
             self.app.notify("Dismiss works on the Unseen tab.")
             return
         flt = self._filters.get("unseen")
-        cat = flt[1] if flt and flt[0] == "category" else None
-        scope = f" in {cat.get('name')}" if cat else ""
+        if flt and flt[0] == "tag":
+            # The server can't dismiss by tag, so dismiss exactly the topics on screen.
+            ids = [t["id"] for t in self._view_data.get("feed:unseen") or [] if t.get("id")]
+            if not ids:
+                self.app.notify("Nothing to dismiss.")
+                return
+            question = f"Dismiss the {len(ids)} topic{'s' if len(ids) != 1 else ''} shown for #{flt[1]}?"
+            category_id = None
+        else:
+            ids = []
+            cat = flt[1] if flt else None
+            category_id = cat.get("id") if cat else None
+            scope = f" in {cat.get('name')}" if cat else ""
+            question = f"Dismiss all new and unread{scope}?"
 
         def done(ok: bool | None) -> None:
             if ok:
-                self._dismiss_worker(cat.get("id") if cat else None)
+                self._dismiss_worker(category_id, ids)
 
-        self.app.push_screen(ConfirmModal(f"Dismiss all new and unread{scope}?"), done)
+        self.app.push_screen(ConfirmModal(question), done)
 
     @work(thread=True, group="dismiss")
-    def _dismiss_worker(self, category_id: int | None) -> None:
+    def _dismiss_worker(self, category_id: int | None, topic_ids: list[int]) -> None:
         try:
-            self.app.client.dismiss_new(category_id)
+            if topic_ids:
+                self.app.client.dismiss_topic_ids(topic_ids)
+            else:
+                self.app.client.dismiss_new(category_id)
         except ApiError as e:
             self.app.call_from_thread(self.app.report_error, e, "Dismiss")
             return

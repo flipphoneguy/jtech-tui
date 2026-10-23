@@ -42,6 +42,7 @@ class SearchTabMixin:
     _search_more = False
     _search_loading = False
     _search_targets: dict[int, int] = {}
+    _search_pages: list[dict] = []
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id == "search-input":
@@ -73,12 +74,41 @@ class SearchTabMixin:
         self._search_page = page
         self._search_more = bool((res.get("grouped_search_result") or {}).get("more_full_page_results"))
         if page == 1:
-            self._view_data["search"] = res
-            self._search_targets = {}
+            self._search_pages = [res]
+            self._reset_search_table()
+        else:
+            self._search_pages.append(res)
+        added = self._add_search_rows(res)
         t = self.query_one("#tbl-search", DataTable)
         if page == 1:
-            t.clear(columns=True)
-            t.add_columns("Topic", "Match", "When")
+            if not t.row_count:
+                t.add_row(Text("No results.", style="dim"), "", "", key="none")
+            self._restore_cursor(t, 0)
+        elif added:
+            self.app.notify(f"+{added} more results.")
+
+    def _rebuild_search(self) -> None:
+        """Redraw every loaded page (after a resize) and keep the cursor where it was."""
+        pages = getattr(self, "_search_pages", [])
+        if not pages:
+            return
+        t = self.query_one("#tbl-search", DataTable)
+        row = t.cursor_row
+        self._reset_search_table()
+        for res in pages:
+            self._add_search_rows(res)
+        if not t.row_count:
+            t.add_row(Text("No results.", style="dim"), "", "", key="none")
+        self._restore_cursor(t, row)
+
+    def _reset_search_table(self) -> None:
+        self._search_targets = {}
+        t = self.query_one("#tbl-search", DataTable)
+        t.clear(columns=True)
+        t.add_columns("Topic", "Match", "When")
+
+    def _add_search_rows(self, res: dict) -> int:
+        t = self.query_one("#tbl-search", DataTable)
         total = self.size.width or 80
         title_w = max(20, total * 2 // 5)
         blurb_w = max(20, total - title_w - 14)
@@ -103,12 +133,7 @@ class SearchTabMixin:
             blurb.append(truncate((p.get("blurb") or "").replace("\n", " "), blurb_w))
             t.add_row(title, blurb, time_ago(p.get("created_at")), key=f"stopic:{tid}", height=2)
             added += 1
-        if page == 1 and not t.row_count:
-            t.add_row(Text("No results.", style="dim"), "", "", key="none")
-        if page == 1:
-            self._restore_cursor(t, 0)
-        elif added:
-            self.app.notify(f"+{added} more results.")
+        return added
 
     def _search_row_selected(self, key: str) -> bool:
         if not key.startswith("stopic:"):
