@@ -25,10 +25,12 @@ from ..util import time_ago as _pretty_time, truncate as _truncate
 from ..api import ApiError
 from ..editor import edit_markdown
 from .composer import (
-    CategoryPickerModal,
+    ConfirmModal,
     FilePickerModal,
+    MenuModal,
     NewTopicModal,
     PMComposerModal,
+    PromptModal,
     SearchModal,
 )
 from .leaderboard import LeaderboardScreen
@@ -37,7 +39,11 @@ from .staff_tab import StaffTabMixin
 from .thread import ThreadScreen, upload_and_copy
 
 
-FEEDS = ("latest", "new", "top", "unseen")
+FEEDS = ("latest", "unseen")
+FEED_LABELS = {"latest": "Latest", "unseen": "Unseen"}
+# With the site's unified New view, /new lists brand-new topics and topics with unread replies.
+FEED_PATHS = {"latest": "latest", "unseen": "new"}
+NOTIFICATION_LEVELS = [("3", "Watching"), ("2", "Tracking"), ("1", "Normal"), ("0", "Muted")]
 TAB_ORDER = (
     *[f"tab-{f}" for f in FEEDS],
     "tab-categories",
@@ -70,14 +76,43 @@ def _state_cell(topic: dict) -> Text:
     return Text("·", style="dim")
 
 
-def _title_cell(topic: dict, width: int) -> Text:
-    text = _truncate(topic.get("title", ""), width)
+def _markers(topic: dict) -> str:
+    m = ""
+    if topic.get("has_accepted_answer"):
+        m += "✓"
+    if topic.get("pinned") or topic.get("pinned_globally"):
+        m += "📌"
+    if topic.get("closed"):
+        m += "🔒"
+    if topic.get("is_hot"):
+        m += "🔥"
+    return m
+
+
+def _title_cell(topic: dict, width: int, site=None) -> Text:
+    """Title with status markers; with ``site``, a second dim line of category, tags, last poster and likes."""
+    marks = _markers(topic)
+    t = Text()
+    if marks:
+        t.append(marks + " ")
     state = _topic_state(topic)
-    if state in ("new", "unread"):
-        return Text(text, style="bold")
-    if state == "read":
-        return Text(text, style="dim")
-    return Text(text)
+    style = "bold" if state in ("new", "unread") else "dim" if state == "read" else ""
+    t.append(_truncate(topic.get("title", ""), max(5, width - t.cell_len)), style=style)
+    if site is None:
+        return t
+    bits: list[str] = []
+    cat = site.category_label(topic.get("category_id"))
+    if cat:
+        bits.append(cat)
+    tags = [x if isinstance(x, str) else x.get("name", "") for x in topic.get("tags") or []]
+    if tags:
+        bits.append(" ".join(f"#{x}" for x in tags[:4]))
+    if topic.get("last_poster_username"):
+        bits.append(f"@{topic['last_poster_username']}")
+    if topic.get("like_count"):
+        bits.append(f"♥ {topic['like_count']}")
+    t.append("\n  " + _truncate(" · ".join(bits), max(5, width - 2)), style="dim italic")
+    return t
 
 
 def _posts_cell(topic: dict) -> Text:
@@ -102,6 +137,9 @@ class MainScreen(StaffTabMixin, Screen):
         Binding("slash", "search", "Search"),
         Binding("U", "upload", "Upload"),
         Binding("L", "leaderboard", "Leaderboard"),
+        Binding("f", "filter", "Filter"),
+        Binding("w", "topic_level", "Watch…"),
+        Binding("D", "dismiss", "Dismiss"),
         Binding("ctrl+right", "next_tab", "Next tab", show=False),
         Binding("ctrl+left", "prev_tab", "Prev tab", show=False),
         Binding("down", "tabs_down", "", show=False),
@@ -121,6 +159,9 @@ class MainScreen(StaffTabMixin, Screen):
         self._feed_loading_more: set[str] = set()
         self._did_initial_load = False
         self._live_new: dict[str, set[int]] = {}
+        # feed -> ("category", category dict) | ("tag", name)
+        self._filters: dict[str, tuple[str, object]] = {}
+        self._top_tags: list[str] = []
         self._thread_prefetch: dict[int, tuple[dict, float]] = {}
         self._prefetch_timer = None
 
@@ -137,7 +178,7 @@ class MainScreen(StaffTabMixin, Screen):
         yield Header()
         with TabbedContent(id="tabs"):
             for f in FEEDS:
-                with TabPane(f.capitalize(), id=f"tab-{f}"):
+                with TabPane(FEED_LABELS[f], id=f"tab-{f}"):
                     yield VimDataTable(id=f"tbl-{f}", cursor_type="row", zebra_stripes=True)
             with TabPane("Categories", id="tab-categories"):
                 yield VimDataTable(id="tbl-categories", cursor_type="row", zebra_stripes=True)
@@ -171,6 +212,8 @@ class MainScreen(StaffTabMixin, Screen):
         tabs = self.query_one("#tabs", TabbedContent)
         self._sync_staff_tabs()
         default = (self.app.cfg.default_feed or "latest").strip()
+        # Old configs may name feeds that were folded into others.
+        default = {"new": "unseen", "unread": "unseen", "top": "latest"}.get(default, default)
         target = f"tab-{default}" if default in FEEDS else (
             "tab-categories" if default == "categories" else
             "tab-messages" if default == "messages" else
@@ -187,7 +230,7 @@ class MainScreen(StaffTabMixin, Screen):
         self.call_after_refresh(self._focus_active_table)
         live = self.app.live
         live.subscribe("/latest", lambda d: self._on_live_topics("latest", d))
-        live.subscribe("/new", lambda d: self._on_live_topics("new", d))
+        live.subscribe("/new", lambda d: self._on_live_topics("unseen", d))
 
     def _focus_active_table(self) -> None:
         tab_id = self._current_tab_id()
@@ -360,20 +403,42 @@ class MainScreen(StaffTabMixin, Screen):
             self._load_staff()
 
     # --- feeds ---
+
+    def _fetch_feed_page(self, feed: str, page: int) -> tuple[list[dict], bool]:
+        """One page of a feed tab, honoring its category/tag filter. Blocking."""
+        client = self.app.client
+        path = FEED_PATHS[feed]
+        flt = self._filters.get(feed)
+        if flt and flt[0] == "category":
+            d = client.category_feed(flt[1], path, page)
+        elif flt and flt[0] == "tag":
+            d = client.topic_list(f"/tag/{flt[1]}/l/{path}", page)
+        else:
+            d = client.feed(path, page)
+        tl = d.get("topic_list") or {}
+        if tl.get("top_tags"):
+            self._top_tags = [t if isinstance(t, str) else t.get("name", "") for t in tl["top_tags"]]
+        return tl.get("topics") or [], bool(tl.get("more_topics_url"))
+
+    def _feed_label(self, feed: str) -> str:
+        flt = self._filters.get(feed)
+        if not flt:
+            return FEED_LABELS[feed]
+        name = flt[1].get("name", "") if flt[0] == "category" else f"#{flt[1]}"
+        return f"{FEED_LABELS[feed]} · {_truncate(name, 14)}"
+
     @work(thread=True, exclusive=True, group="feed")
     def _load_feed(self, feed: str) -> None:
         try:
-            d = self.app.client.feed(feed, 0)
-            tl = d.get("topic_list") or {}
-            topics, more_url = tl.get("topics") or [], tl.get("more_topics_url")
+            topics, more = self._fetch_feed_page(feed, 0)
         except ApiError as e:
             self.app.call_from_thread(self.app.report_error, e, "Load")
             return
-        self.app.call_from_thread(self._populate_feed, feed, topics, bool(more_url))
+        self.app.call_from_thread(self._populate_feed, feed, topics, more)
 
     def _populate_feed(self, feed: str, topics: list[dict], has_more: bool = False) -> None:
-        if self._live_new.pop(feed, None):
-            self._set_tab_badge(f"tab-{feed}", feed.capitalize(), 0)
+        self._live_new.pop(feed, None)
+        self._set_tab_badge(f"tab-{feed}", self._feed_label(feed), 0)
         self._view_data[f"feed:{feed}"] = topics
         self._feed_page[feed] = 0
         self._feed_has_more[feed] = has_more
@@ -385,6 +450,8 @@ class MainScreen(StaffTabMixin, Screen):
         title_w = self._title_width(right_reserved=22)
         for topic in topics:
             self._add_feed_row(t, feed, topic, title_w)
+        if not topics:
+            t.add_row("", Text("Nothing here.", style="dim"), "", "", key="none")
         self._restore_cursor(t, prev)
 
     def _add_feed_row(self, t: DataTable, feed: str, topic: dict, title_w: int) -> None:
@@ -392,24 +459,23 @@ class MainScreen(StaffTabMixin, Screen):
         self._topic_cache[key] = topic
         t.add_row(
             _state_cell(topic),
-            _title_cell(topic, title_w),
+            _title_cell(topic, title_w, self.app.site),
             _posts_cell(topic),
             _pretty_time(topic.get("last_posted_at") or topic.get("bumped_at", "")),
             key=key,
+            height=2,
         )
 
     @work(thread=True, exclusive=True, group="feed-more")
     def _load_more_feed(self, feed: str) -> None:
         next_page = self._feed_page.get(feed, 0) + 1
         try:
-            d = self.app.client.feed(feed, next_page)
-            tl = d.get("topic_list") or {}
-            topics, more_url = tl.get("topics") or [], tl.get("more_topics_url")
+            topics, more = self._fetch_feed_page(feed, next_page)
         except ApiError as e:
             self.app.call_from_thread(self.app.report_error, e, "Load more")
             self._feed_loading_more.discard(feed)
             return
-        self.app.call_from_thread(self._append_feed_page, feed, topics, bool(more_url), next_page)
+        self.app.call_from_thread(self._append_feed_page, feed, topics, more, next_page)
 
     def _append_feed_page(
         self, feed: str, topics: list[dict], has_more: bool, page: int
@@ -574,8 +640,114 @@ class MainScreen(StaffTabMixin, Screen):
         tid = data.get("topic_id")
         if not tid:
             return
+        shown = {t.get("id") for t in self._view_data.get(f"feed:{feed}") or []}
+        if tid in shown and feed == "unseen":
+            return
         self._live_new.setdefault(feed, set()).add(tid)
-        self._set_tab_badge(f"tab-{feed}", feed.capitalize(), len(self._live_new[feed]), mark="↑")
+        self._set_tab_badge(f"tab-{feed}", self._feed_label(feed), len(self._live_new[feed]), mark="↑")
+
+    # --- feed actions ---
+
+    def _current_feed(self) -> str | None:
+        tab = self._current_tab_id()
+        name = tab[4:] if tab.startswith("tab-") else ""
+        return name if name in FEEDS else None
+
+    def _highlighted_topic(self) -> dict | None:
+        tab = self._current_tab_id()
+        try:
+            t = self.query_one(f"#tbl-{tab[4:]}", DataTable)
+            key = t.coordinate_to_cell_key((t.cursor_row, 0)).row_key.value
+        except Exception:  # noqa: BLE001
+            return None
+        return self._topic_cache.get(key or "") if key and key.startswith("topic:") else None
+
+    def action_filter(self) -> None:
+        feed = self._current_feed()
+        if feed is None:
+            self.app.notify("Filters work on the Latest and Unseen tabs.")
+            return
+        site = self.app.site
+        items: list[tuple[str, str]] = []
+        if self._filters.get(feed):
+            items.append(("clear", "✕ Clear filter"))
+        items.append(("", "CATEGORIES"))
+        for cid in sorted(site.categories, key=lambda c: site.category_label(c).lower()):
+            items.append((f"c:{cid}", site.category_label(cid)))
+        if self._top_tags:
+            items.append(("", "TAGS"))
+            items += [(f"t:{tag}", f"#{tag}") for tag in self._top_tags]
+        items.append(("tag?", "Other tag…"))
+
+        def done(choice: str | None) -> None:
+            if not choice:
+                return
+            if choice == "clear":
+                self._filters.pop(feed, None)
+            elif choice.startswith("c:"):
+                self._filters[feed] = ("category", site.category(int(choice[2:])))
+            elif choice.startswith("t:"):
+                self._filters[feed] = ("tag", choice[2:])
+            elif choice == "tag?":
+                def got(tag: str | None) -> None:
+                    if tag:
+                        self._filters[feed] = ("tag", tag.lstrip("#").strip())
+                        self._load_feed(feed)
+
+                self.app.push_screen(PromptModal("Filter by tag:", "tag name"), got)
+                return
+            self._load_feed(feed)
+
+        self.app.push_screen(MenuModal(f"Filter {FEED_LABELS[feed]}", items), done)
+
+    def action_dismiss(self) -> None:
+        if self._current_feed() != "unseen":
+            self.app.notify("Dismiss works on the Unseen tab.")
+            return
+        flt = self._filters.get("unseen")
+        cat = flt[1] if flt and flt[0] == "category" else None
+        scope = f" in {cat.get('name')}" if cat else ""
+
+        def done(ok: bool | None) -> None:
+            if ok:
+                self._dismiss_worker(cat.get("id") if cat else None)
+
+        self.app.push_screen(ConfirmModal(f"Dismiss all new and unread{scope}?"), done)
+
+    @work(thread=True, group="dismiss")
+    def _dismiss_worker(self, category_id: int | None) -> None:
+        try:
+            self.app.client.dismiss_new(category_id)
+        except ApiError as e:
+            self.app.call_from_thread(self.app.report_error, e, "Dismiss")
+            return
+        self.app.call_from_thread(self.app.notify, "Dismissed.")
+        self.app.call_from_thread(self._load_feed, "unseen")
+
+    def action_topic_level(self) -> None:
+        topic = self._highlighted_topic()
+        if topic is None:
+            self.app.notify("Highlight a topic first.")
+            return
+        cur = str(topic.get("notification_level", 1))
+        items = [(lvl, ("• " if lvl == cur else "  ") + name) for lvl, name in NOTIFICATION_LEVELS]
+
+        def done(choice: str | None) -> None:
+            if choice is not None and choice != cur:
+                self._level_worker(topic, int(choice))
+
+        self.app.push_screen(MenuModal(_truncate(topic.get("title", ""), 50), items), done)
+
+    @work(thread=True, group="level")
+    def _level_worker(self, topic: dict, level: int) -> None:
+        try:
+            self.app.client.set_topic_notification_level(int(topic["id"]), level)
+        except ApiError as e:
+            self.app.call_from_thread(self.app.report_error, e, "Notification level")
+            return
+        topic["notification_level"] = level
+        name = dict(NOTIFICATION_LEVELS)[str(level)]
+        self.app.call_from_thread(self.app.notify, f"{name}: {_truncate(topic.get('title', ''), 40)}")
 
     # --- search ---
     def on_input_submitted(self, event: Input.Submitted) -> None:

@@ -195,7 +195,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap = argparse.ArgumentParser(prog="jtech", description="jtech forums TUI")
     ap.add_argument(
         "--feed",
-        choices=["latest", "new", "top", "unseen", "categories", "messages", "notifications"],
+        choices=["latest", "unseen", "categories", "messages", "notifications"],
         help="starting tab",
     )
     return ap.parse_args(argv)

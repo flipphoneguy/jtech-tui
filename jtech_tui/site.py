@@ -206,7 +206,14 @@ class Site:
 
     def fetch(self, client, *, full: bool = True) -> None:
         """Blocking refresh. ``full=False`` skips the large, rarely changing emoji lists."""
-        data: dict[str, Any] = {"site": client.get("/site.json"), "categories": client.categories()}
+        cats = client.categories()
+        # Lazy-loaded sites leave some subcategories out of /categories.json; fetch them by id.
+        have = {c["id"] for c in cats}
+        missing = sorted({i for c in cats for i in c.get("subcategory_ids") or []} - have)
+        if missing:
+            found = client.get("/categories/find.json", params=[("ids[]", i) for i in missing])
+            cats += found.get("categories") or []
+        data: dict[str, Any] = {"site": client.get("/site.json"), "categories": cats}
         if full:
             data["emojis"] = client.emojis()
             data["aliases"] = client.emoji_aliases()
