@@ -27,6 +27,7 @@ class LeaderboardScreen(Screen):
     BINDINGS = [
         Binding("escape", "back", "Back"),
         Binding("q", "back", "Back"),
+        Binding("y", "copy_link", "Copy link"),
         Binding("R", "reload", "Reload"),
     ]
 
@@ -160,6 +161,15 @@ class LeaderboardScreen(Screen):
 
         self._hide_loading()
         self.call_after_refresh(t.focus)
+
+    def action_copy_link(self) -> None:
+        t = self.query_one("#tbl-lb", DataTable)
+        try:
+            key = t.coordinate_to_cell_key((t.cursor_row, 0)).row_key.value or ""
+        except Exception:  # noqa: BLE001
+            key = ""
+        name = key.partition(":")[2] if key.startswith(("u:", "you:")) else ""
+        self.app.copy_link(f"{self.app.client.base_url}/u/{name}" if name else "")
 
     @on(DataTable.RowSelected)
     def _row_selected(self, event: DataTable.RowSelected) -> None:

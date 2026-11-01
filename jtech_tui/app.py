@@ -12,7 +12,7 @@ from .api import ApiError, Client, RateLimited, Unauthorized
 from .config import Config
 from .live import LiveBus
 from .site import Site
-from .util import open_url
+from .util import copy_to_clipboard, open_url
 
 
 class JtechApp(App):
@@ -63,6 +63,14 @@ class JtechApp(App):
 
     def open_url(self, url: str, *, new_tab: bool = True) -> None:
         open_url(url)
+
+    def copy_link(self, url: str) -> None:
+        if not url:
+            self.notify("No link here.", severity="warning")
+        elif copy_to_clipboard(url):
+            self.notify(f"Copied: {url}")
+        else:
+            self.notify("No clipboard tool found.", severity="warning")
 
     def on_mount(self) -> None:
         from .screens import LoginScreen, MainScreen

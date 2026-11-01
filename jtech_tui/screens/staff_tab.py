@@ -253,6 +253,19 @@ class StaffTabMixin:
             return True
         return False
 
+    def _staff_row_url(self, key: str) -> str:
+        base = self.app.client.base_url
+        if key.startswith("rev:"):
+            return f"{base}/review/{key[4:]}"
+        if key.startswith("note:"):
+            n = (self._staff_data.get("notes") or [])[int(key[5:])]
+            url = n.get("url") or (f"/t/-/{n['topic_id']}" if n.get("topic_id") else "")
+            return base + url if url.startswith("/") else url
+        if key.startswith("log:"):
+            row = (self._staff_data.get("log") or [])[int(key[4:])]
+            return f"{base}/t/-/{row['topic_id']}" if row.get("topic_id") else ""
+        return ""
+
     def _open_staff_target(self, topic_id, url, title) -> None:
         from .thread import ThreadScreen
 

@@ -122,7 +122,7 @@ class ReactorsModal(FitsScreen, ModalScreen[None]):
 
 
 class CopyMenuModal(FitsScreen, ModalScreen[tuple[str, int] | None]):
-    """Pick what to copy from a post. Returns ('link', 0), ('code', i) or ('url', i)."""
+    """Pick what to copy from a post. Returns ('raw', 0), ('code', i) or ('url', i)."""
 
     BINDINGS = [Binding("escape", "dismiss_none", "Cancel")]
 
@@ -132,7 +132,7 @@ class CopyMenuModal(FitsScreen, ModalScreen[tuple[str, int] | None]):
         self._links = links or []
 
     def compose(self) -> ComposeResult:
-        opts: list[Option] = [Option("🔗  Copy post link", id="link:0")]
+        opts: list[Option] = [Option("📝  Copy post markdown", id="raw:0")]
         for i, preview in enumerate(self._code_previews):
             label = preview.strip().splitlines()[0] if preview.strip() else "(empty)"
             if len(label) > 48:

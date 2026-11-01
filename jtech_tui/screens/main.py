@@ -21,7 +21,7 @@ from textual.widgets import (
 from .smart_footer import SmartFooter
 
 from ..render import plain_text
-from ..util import copy_to_clipboard, time_ago as _pretty_time, truncate as _truncate
+from ..util import time_ago as _pretty_time, truncate as _truncate
 
 from .. import complete
 from ..api import ApiError
@@ -709,20 +709,22 @@ class MainScreen(StaffTabMixin, SearchTabMixin, Screen):
         return ""
 
     def action_copy_link(self) -> None:
-        if self._current_tab_id() != "tab-notifications":
-            return
-        t = self.query_one("#tbl-notifications", DataTable)
-        try:
-            key = t.coordinate_to_cell_key((t.cursor_row, 0)).row_key.value
-        except Exception:  # noqa: BLE001
-            return
-        url = self._notif_url(self._topic_cache.get(key or "", {}))
-        if not url:
-            self.app.notify("No link for this notification.", severity="warning")
-        elif copy_to_clipboard(url):
-            self.app.notify(f"Copied: {url}")
-        else:
-            self.app.notify("No clipboard tool found.", severity="warning")
+        key = self._highlighted_key()
+        self.app.copy_link(self._row_url(key) if key else "")
+
+    def _row_url(self, key: str) -> str:
+        base = self.app.client.base_url
+        item = self._topic_cache.get(key) or {}
+        kind, _, rest = key.partition(":")
+        if kind in ("topic", "stopic"):
+            url = f"{base}/t/{item.get('slug') or '-'}/{rest}"
+            target = self._search_targets.get(int(rest)) if kind == "stopic" else None
+            return f"{url}/{target}" if target and target > 1 else url
+        if kind == "cat":
+            return f"{base}/c/{item.get('slug') or '-'}/{rest}"
+        if kind == "notif":
+            return self._notif_url(item)
+        return self._staff_row_url(key)
 
     def _update_notif_badge(self, count: int | None = None) -> None:
         if count is None:
@@ -760,14 +762,16 @@ class MainScreen(StaffTabMixin, SearchTabMixin, Screen):
         name = tab[4:] if tab.startswith("tab-") else ""
         return name if name in FEEDS else None
 
-    def _highlighted_topic(self) -> dict | None:
-        tab = self._current_tab_id()
+    def _highlighted_key(self) -> str:
         try:
-            t = self.query_one(f"#tbl-{tab[4:]}", DataTable)
-            key = t.coordinate_to_cell_key((t.cursor_row, 0)).row_key.value
+            t = self.query_one(f"#tbl-{self._current_tab_id()[4:]}", DataTable)
+            return t.coordinate_to_cell_key((t.cursor_row, 0)).row_key.value or ""
         except Exception:  # noqa: BLE001
-            return None
-        return self._topic_cache.get(key or "") if key and key.startswith("topic:") else None
+            return ""
+
+    def _highlighted_topic(self) -> dict | None:
+        key = self._highlighted_key()
+        return self._topic_cache.get(key) if key.startswith("topic:") else None
 
     def action_filter(self) -> None:
         if self._current_tab_id() == "tab-search":
@@ -1025,6 +1029,7 @@ class CategoryTopicsScreen(Screen):
     BINDINGS = [
         Binding("escape", "back", "Back"),
         Binding("q", "back", "Back"),
+        Binding("y", "copy_link", "Copy link"),
         Binding("R", "reload", "Reload"),
     ]
 
@@ -1050,6 +1055,16 @@ class CategoryTopicsScreen(Screen):
 
     def action_reload(self) -> None:
         self._load()
+
+    def action_copy_link(self) -> None:
+        t = self.query_one("#tbl-cat", DataTable)
+        try:
+            key = t.coordinate_to_cell_key((t.cursor_row, 0)).row_key.value or ""
+        except Exception:  # noqa: BLE001
+            key = ""
+        topic = self._topics.get(key)
+        url = f"{self.app.client.base_url}/t/{topic.get('slug') or '-'}/{key}" if topic else ""
+        self.app.copy_link(url)
 
     def _load(self) -> None:
         self._fetch()

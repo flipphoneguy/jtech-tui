@@ -64,7 +64,7 @@ class ThreadScreen(SolvedPollsMixin, ThreadModMixin, Screen):
         Binding("plus,enter", "react", "React"),
         Binding("ctrl+r", "react", "React", show=False),
         Binding("l", "show_reactors", "Reactors"),
-        Binding("y", "yank", "Copy"),
+        Binding("y", "yank", "Copy link"),
         Binding("Y", "copy_menu", "Copy…"),
         Binding("o", "open_url", "Browser"),
         Binding("p", "jump_to_parent", "Jump→reply"),
@@ -607,7 +607,8 @@ class ThreadScreen(SolvedPollsMixin, ThreadModMixin, Screen):
     def action_yank(self) -> None:
         e = self._current()
         if e is not None:
-            self._yank_worker(int(e.id))
+            url = self._post_url(e.number)
+            self._copy(url, f"Copied: {url}")
 
     @work(thread=True, group="raw")
     def _yank_worker(self, post_id: int) -> None:
@@ -627,20 +628,19 @@ class ThreadScreen(SolvedPollsMixin, ThreadModMixin, Screen):
         e = self._current()
         if e is None:
             return
-        url = self._post_url(e.number)
         r = e.rendered
         blocks = r.code_blocks if r else []
         links = r.links if r else []
         if not blocks and not links:
-            self._copy(url, f"Copied: {url}")
+            self._yank_worker(int(e.id))
             return
 
         def done(choice: tuple[str, int] | None) -> None:
             if not choice:
                 return
             kind, i = choice
-            if kind == "link":
-                self._copy(url, f"Copied: {url}")
+            if kind == "raw":
+                self._yank_worker(int(e.id))
             elif kind == "code" and 0 <= i < len(blocks):
                 self._copy(blocks[i], f"Code block {i + 1} copied.")
             elif kind == "url" and 0 <= i < len(links):

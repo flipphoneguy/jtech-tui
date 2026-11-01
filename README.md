@@ -64,7 +64,7 @@ Boxes that ask for a username, tag or topic suggest matches as you type. `↑` /
 | `f` | Filter Latest or Unseen by category or tag; on Search, open the filter menu |
 | `w` | Watch, track, normal or mute the highlighted topic |
 | `D` | Dismiss everything on Unseen |
-| `y` | Copy the highlighted notification's link (handy for ones that can't open in the app) |
+| `y` | Copy the highlighted item's link (topic, category, notification, review item…). Works the same in category lists, profiles and the leaderboard. |
 | `/` | Search |
 | `N` / `M` | New topic / new private message |
 | `P` | Your profile |
@@ -96,8 +96,8 @@ Scrolling to the bottom of a list loads the next page.
 | `J` | Go to the solution |
 | `l` | Who reacted |
 | `L` | Links in the post (forum links open in the app, others in the browser) |
-| `y` | Copy the post's markdown |
-| `Y` | Copy menu: post link, any code block, or any link |
+| `y` | Copy the post's link |
+| `Y` | Copy menu: the post's markdown, any code block, or any link (straight to the markdown when there are none) |
 | `o` | Open the post in the browser |
 | `u` | Author's profile |
 | `x` | Collapse or expand a long post |

@@ -40,6 +40,7 @@ class UserProfileScreen(Screen):
         Binding("s", "status", "Status"),
         Binding("m", "moderate", "Moderate"),
         Binding("o", "open_web", "Browser"),
+        Binding("y", "copy_link", "Copy link"),
         Binding("R", "reload", "Reload"),
     ]
 
@@ -352,6 +353,30 @@ class UserProfileScreen(Screen):
             self.app.push_screen(UserProfileScreen(item.get("username", "")))
 
     # --- actions ---
+
+    def action_copy_link(self) -> None:
+        """The highlighted row's link, or the profile's when the row has none."""
+        base = self.app.client.base_url
+        url = f"{base}/u/{self._username}"
+        table = self.query_one("#tbl-profile", VimDataTable)
+        try:
+            key = table.coordinate_to_cell_key((table.cursor_row, 0)).row_key.value or ""
+        except Exception:  # noqa: BLE001
+            key = ""
+        kind, _, idx = key.partition(":")
+        rows = self._data.get(self._section, [])
+        item = rows[int(idx)] if idx.isdigit() and int(idx) < len(rows) else None
+        if item is not None:
+            if kind in ("a", "r"):
+                url = f"{base}/t/{item.get('slug') or '-'}/{item.get('topic_id')}/{item.get('post_number') or 1}"
+            elif kind == "t":
+                url = f"{base}/t/{item.get('slug') or '-'}/{item.get('id')}"
+            elif kind == "b":
+                b = item.get("badge") or {}
+                url = f"{base}/badges/{b.get('id')}/{b.get('slug') or '-'}"
+            elif kind == "u":
+                url = f"{base}/u/{item.get('username', '')}"
+        self.app.copy_link(url)
 
     def action_follow(self) -> None:
         if not self.check_action("follow", ()):
