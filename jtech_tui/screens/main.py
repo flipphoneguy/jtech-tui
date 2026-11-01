@@ -56,14 +56,25 @@ TAB_ORDER = (
 )
 
 
-def _topic_state(topic: dict) -> str:
-    """'new' | 'unread' | 'pinned' | 'read' — mimics Discourse topic state."""
-    if topic.get("unseen") or topic.get("new_posts"):
-        return "new"
+def _unread_count(topic: dict) -> int:
+    """Posts after the last one read. The site only sends this for tracked topics, so work it out the same way for the rest."""
     if topic.get("unread_posts"):
-        return "unread"
-    if topic.get("pinned") or topic.get("pinned_globally"):
-        return "pinned"
+        return topic["unread_posts"]
+    last = topic.get("last_read_post_number")
+    high = topic.get("highest_post_number")
+    if isinstance(last, int) and last > 0 and isinstance(high, int):
+        return max(0, high - last)
+    return 0
+
+
+def _topic_state(topic: dict) -> str:
+    """'new' (never opened, recent) | 'unread' (tracked, has unread) | 'regular' (not tracked, has unread) | 'unopened' | 'read'."""
+    if topic.get("unseen"):
+        return "new"
+    if _unread_count(topic):
+        return "unread" if (topic.get("notification_level") or 0) >= 2 else "regular"
+    if not topic.get("last_read_post_number"):
+        return "unopened"
     return "read"
 
 
@@ -73,9 +84,7 @@ def _state_cell(topic: dict) -> Text:
         return Text("●", style="bold yellow")
     if state == "unread":
         return Text("●", style="bold cyan")
-    if state == "pinned":
-        return Text("★", style="yellow")
-    return Text("·", style="dim")
+    return Text(" ")
 
 
 def _markers(topic: dict) -> str:
@@ -98,7 +107,7 @@ def _title_cell(topic: dict, width: int, site=None) -> Text:
     if marks:
         t.append(marks + " ")
     state = _topic_state(topic)
-    style = "bold" if state in ("new", "unread") else "dim" if state == "read" else ""
+    style = {"new": "bold", "unread": "bold", "read": "dim"}.get(state, "")
     t.append(_truncate(topic.get("title", ""), max(5, width - t.cell_len)), style=style)
     if site is None:
         return t
@@ -146,12 +155,10 @@ def _posts_cell(topic: dict) -> Text:
     if total is None:
         rc = topic.get("reply_count")
         total = (rc + 1) if isinstance(rc, int) else 0
-    unread = topic.get("unread_posts") or 0
-    new = topic.get("new_posts") or 0
-    badge = unread or new
-    if badge:
-        return Text(f"{badge}/{total}", style="bold cyan")
-    return Text(str(total), style="dim")
+    state = _topic_state(topic)
+    if state in ("unread", "regular"):
+        return Text(f"{_unread_count(topic)}/{total}", style="bold cyan" if state == "unread" else "")
+    return Text(str(total), style="dim" if state == "read" else "")
 
 
 class MainScreen(StaffTabMixin, SearchTabMixin, Screen):

@@ -77,13 +77,14 @@ class TopicsMixin(BaseClient):
             out.extend((d.get("post_stream") or {}).get("posts") or [])
         return out
 
-    def mark_read(self, tid: int, post_numbers: list[int], ms_each: int = 5000) -> None:
-        if not post_numbers:
+    def mark_read(self, tid: int, timings: dict[int, int], topic_ms: int) -> None:
+        """Report reading time in ms per post number and for the topic; the server uses the total to auto-track."""
+        if not timings:
             return
         self.post("/topics/timings", {
             "topic_id": tid,
-            "topic_time": min(len(post_numbers) * ms_each, 60000),
-            "timings": {str(pn): ms_each for pn in post_numbers},
+            "topic_time": topic_ms,
+            "timings": {str(pn): ms for pn, ms in timings.items()},
         })
 
     def set_topic_notification_level(self, tid: int, level: int) -> None:

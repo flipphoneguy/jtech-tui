@@ -34,6 +34,10 @@ CHUNK = 20
 # Backup poll; live updates normally arrive over MessageBus within a second.
 POLL_SECONDS = 120.0
 PREFETCH_FRESH = 60.0
+# The server caps each timings report at 60s, so send well before that.
+READ_FLUSH_SECONDS = 30.0
+# No key or tap for this long and reading time stops counting.
+IDLE_SECONDS = 60.0
 
 
 def strip_template(text: str) -> str:
@@ -102,6 +106,9 @@ class ThreadScreen(SolvedPollsMixin, ThreadModMixin, Screen):
         self._auto = None
         self._seen_buf: set[int] = set()
         self._seen_timer = None
+        # Reading time not yet sent: per post number, and for the topic as a whole.
+        self._read_ms: dict[int, int] = {}
+        self._topic_ms = 0
         self._live_on = False
         self._live_timer = None
 
@@ -120,6 +127,8 @@ class ThreadScreen(SolvedPollsMixin, ThreadModMixin, Screen):
 
     def on_mount(self) -> None:
         self._auto = self.set_interval(POLL_SECONDS, self._poll)
+        self.set_interval(1.0, self._read_tick)
+        self.set_interval(READ_FLUSH_SECONDS, self._flush_seen)
         pre = self._prefetched
         self._prefetched = None
         if pre and time.monotonic() - pre[1] < PREFETCH_FRESH and not self._target:
@@ -320,21 +329,40 @@ class ThreadScreen(SolvedPollsMixin, ThreadModMixin, Screen):
     def _seen(self, event: PostStream.Seen) -> None:
         self._seen_buf.update(event.numbers)
         if self._seen_timer is None:
-            self._seen_timer = self.set_timer(2.0, self._flush_seen)
+            self._seen_timer = self.set_timer(2.0, self._seen_fire)
+
+    def _read_tick(self) -> None:
+        # Like the site: count only while this topic is on top and you've pressed something lately.
+        if not self.is_current or time.monotonic() - self.app.last_input > IDLE_SECONDS:
+            return
+        self._topic_ms += 1000
+        for n in self.stream.visible_numbers():
+            self._read_ms[n] = self._read_ms.get(n, 0) + 1000
+
+    def _seen_fire(self) -> None:
+        self._seen_timer = None
+        self._flush_seen()
 
     def _flush_seen(self) -> None:
-        self._seen_timer = None
-        if self._seen_buf:
-            nums = sorted(self._seen_buf)
-            self._seen_buf.clear()
-            self._mark_read(nums)
+        timings = dict(self._read_ms)
+        for n in self._seen_buf:
+            timings.setdefault(n, 0)
+        topic_ms = self._topic_ms
+        self._seen_buf.clear()
+        self._read_ms.clear()
+        self._topic_ms = 0
+        if not timings:
+            return
+        client, tid = self.app.client, self._tid
 
-    @work(thread=True, group="read")
-    def _mark_read(self, numbers: list[int]) -> None:
-        try:
-            self.app.client.mark_read(self._tid, numbers)
-        except ApiError:
-            pass
+        def send() -> None:
+            try:
+                client.mark_read(tid, timings, topic_ms)
+            except ApiError:
+                pass
+
+        # On the app, not this screen, so the last report still goes out after the screen closes.
+        self.app.run_worker(send, thread=True, group="read")
 
     # --- navigation ---
 

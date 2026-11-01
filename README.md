@@ -50,6 +50,8 @@ Tabs: **Latest**, **Unseen** (new topics plus topics with unread replies), **Cat
 
 Each topic shows ✓ solved, 📌 pinned, 🔒 closed and 🔥 hot markers, with a second line for category, tags, last poster and likes.
 
+A yellow dot means a new topic you haven't opened. A cyan dot with a cyan count means unread posts in a topic you track or watch. Topics you don't track still show their unread count, in plain text and without a dot. Fully read topics are grey.
+
 | Key | Action |
 |---|---|
 | `tab` / `shift+tab`, `←` / `→` on the tab bar | Switch tabs |

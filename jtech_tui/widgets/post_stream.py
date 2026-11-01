@@ -630,21 +630,23 @@ class PostStream(ScrollView, can_focus=True):
         if self.more_below and top + 2 * h >= self._total:
             self.post_message(self.NeedMore(self, "below"))
 
-    def _report_seen(self) -> None:
-        if not self.entries:
-            return
+    def visible_numbers(self) -> list[int]:
+        if not self.entries or not self._starts:
+            return []
         top = int(self.scroll_y)
         bottom = top + self._view_h()
         lo = max(0, bisect_right(self._starts, top) - 1)
-        new: list[int] = []
+        out: list[int] = []
         for i in range(lo, len(self.entries)):
             if self._starts[i] >= bottom:
                 break
-            n = self.entries[i].number
-            if n not in self._seen:
-                self._seen.add(n)
-                new.append(n)
+            out.append(self.entries[i].number)
+        return out
+
+    def _report_seen(self) -> None:
+        new = [n for n in self.visible_numbers() if n not in self._seen]
         if new:
+            self._seen.update(new)
             self.post_message(self.Seen(self, new))
 
     def on_click(self, event: events.Click) -> None:

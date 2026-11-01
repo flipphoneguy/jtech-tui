@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 
-from textual import work
+from textual import events, work
 from textual.app import App
 from textual.binding import Binding
 
@@ -36,6 +37,13 @@ class JtechApp(App):
         self.unsent: dict[str, str] = {}
         self._live_user: int | None = None
         self._last_toast_id = 0
+        # Monotonic time of the last key or tap; read tracking pauses when this gets old.
+        self.last_input = time.monotonic()
+
+    async def on_event(self, event: events.Event) -> None:
+        if isinstance(event, (events.Key, events.MouseDown, events.MouseScrollDown, events.MouseScrollUp, events.Paste)):
+            self.last_input = time.monotonic()
+        await super().on_event(event)
 
     def _make_client(self, cookie: str) -> Client:
         return Client(self.cfg.forum_url, cookie, on_cookie_change=self._cookie_rotated)
