@@ -102,7 +102,7 @@ def _markers(topic: dict) -> str:
 
 
 def _title_cell(topic: dict, width: int, site=None) -> Text:
-    """Title with status markers; with ``site``, a second dim line of category, tags, last poster and likes."""
+    """Title with status markers; with ``site``, a second dim line of category, tags and last poster."""
     marks = _markers(topic)
     t = Text()
     if marks:
@@ -118,9 +118,8 @@ def _title_cell(topic: dict, width: int, site=None) -> Text:
 
 
 def _meta_line(topic: dict, site, width: int) -> Text:
-    """Category · tags · @poster · ♥ likes, each part shortened within its own budget so none crowds out the rest."""
+    """Category · tags · @poster, each part shortened within its own budget so none crowds out the rest."""
     sep = " · "
-    likes = f"♥ {topic['like_count']}" if topic.get("like_count") else ""
     poster = f"@{topic['last_poster_username']}" if topic.get("last_poster_username") else ""
     tags = " ".join(
         f"#{x if isinstance(x, str) else x.get('name', '')}" for x in topic.get("tags") or []
@@ -128,7 +127,7 @@ def _meta_line(topic: dict, site, width: int) -> Text:
     cat = site.category_label(topic.get("category_id"))
     # Fixed parts first, then split what's left between category and tags.
     poster = _truncate(poster, 16)
-    fixed = sum(len(p) + len(sep) for p in (likes, poster) if p)
+    fixed = len(poster) + len(sep) if poster else 0
     room = max(0, width - fixed)
     if cat and tags:
         cat_w = max(8, min(len(cat), room // 2 if len(tags) > room // 2 else room - len(tags) - len(sep)))
@@ -139,7 +138,6 @@ def _meta_line(topic: dict, site, width: int) -> Text:
         (_truncate(cat, cat_w), "italic"),
         (_truncate(tags, tag_w) if tag_w >= 4 else "", "#9a86c8"),
         (poster, ""),
-        (likes, ""),
     ]
     out = Text(style="dim")
     for text, style in parts:
@@ -151,15 +149,20 @@ def _meta_line(topic: dict, site, width: int) -> Text:
     return out
 
 
-def _posts_cell(topic: dict) -> Text:
+def _posts_cell(topic: dict, with_time: bool = False) -> Text:
+    """Post count, plus the last activity time on a second line for two-line rows."""
     total = topic.get("posts_count")
     if total is None:
         rc = topic.get("reply_count")
         total = (rc + 1) if isinstance(rc, int) else 0
     state = _topic_state(topic)
     if state in ("unread", "regular"):
-        return Text(f"{_unread_count(topic)}/{total}", style="bold cyan" if state == "unread" else "")
-    return Text(str(total), style="dim" if state == "read" else "")
+        t = Text(f"{_unread_count(topic)}/{total}", style="bold cyan" if state == "unread" else "", justify="right")
+    else:
+        t = Text(str(total), style="dim" if state == "read" else "", justify="right")
+    if with_time:
+        t.append("\n" + _pretty_time(topic.get("last_posted_at") or topic.get("bumped_at", "")), style="dim")
+    return t
 
 
 class MainScreen(StaffTabMixin, SearchTabMixin, Screen):
@@ -238,9 +241,9 @@ class MainScreen(StaffTabMixin, SearchTabMixin, Screen):
         # Columns
         for f in FEEDS:
             t = self.query_one(f"#tbl-{f}", DataTable)
-            t.add_columns(" ", "Title", "Posts", "Activity")
+            t.add_columns(" ", "Title", "Posts")
         self.query_one("#tbl-categories", DataTable).add_columns("Category", "Topics", "Description")
-        self.query_one("#tbl-messages", DataTable).add_columns(" ", "Subject", "Posts", "Activity")
+        self.query_one("#tbl-messages", DataTable).add_columns(" ", "Subject", "Posts", "Last")
         self.query_one("#tbl-notifications", DataTable).add_columns("●", "Type", "From", "Title")
         self.query_one("#tbl-search", DataTable).add_columns("Topic", "Match", "When")
 
@@ -485,12 +488,12 @@ class MainScreen(StaffTabMixin, SearchTabMixin, Screen):
         t = self.query_one(f"#tbl-{feed}", DataTable)
         prev = t.cursor_row
         t.clear()
-        # State(3) + Posts(8) + Activity(6) + cell padding.
-        title_w = self._title_width(right_reserved=22)
+        # State(3) + Posts with time under it(11).
+        title_w = self._title_width(right_reserved=14)
         for topic in topics:
             self._add_feed_row(t, feed, topic, title_w)
         if not topics:
-            t.add_row("", Text("Nothing here.", style="dim"), "", "", key="none")
+            t.add_row("", Text("Nothing here.", style="dim"), "", key="none")
         self._restore_cursor(t, prev)
 
     def _add_feed_row(self, t: DataTable, feed: str, topic: dict, title_w: int) -> None:
@@ -499,8 +502,7 @@ class MainScreen(StaffTabMixin, SearchTabMixin, Screen):
         t.add_row(
             _state_cell(topic),
             _title_cell(topic, title_w, self.app.site),
-            _posts_cell(topic),
-            _pretty_time(topic.get("last_posted_at") or topic.get("bumped_at", "")),
+            _posts_cell(topic, with_time=True),
             key=key,
             height=2,
         )
@@ -532,7 +534,7 @@ class MainScreen(StaffTabMixin, SearchTabMixin, Screen):
         self._feed_page[feed] = page
         self._feed_has_more[feed] = has_more
         t = self.query_one(f"#tbl-{feed}", DataTable)
-        title_w = self._title_width(right_reserved=22)
+        title_w = self._title_width(right_reserved=14)
         for topic in fresh:
             self._add_feed_row(t, feed, topic, title_w)
         if fresh:
@@ -1039,7 +1041,7 @@ class CategoryTopicsScreen(Screen):
     def on_mount(self) -> None:
         self.sub_title = self._cat.get("name", "")
         t = self.query_one("#tbl-cat", DataTable)
-        t.add_columns(" ", "Title", "Posts", "Activity")
+        t.add_columns(" ", "Title", "Posts", "Last")
         self._load()
         self.call_after_refresh(t.focus)
 

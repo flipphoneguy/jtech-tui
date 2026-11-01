@@ -17,7 +17,7 @@ SECTION_NAMES = {"review": "Review", "notes": "Notes", "inbox": "Mod inbox", "lo
 COLUMNS = {
     "review": ("Type", "Reason", "Author", "What", "Age"),
     "notes": ("●", "Kind", "Who", "What", "Age"),
-    "inbox": ("●", "Subject", "Posts", "Activity"),
+    "inbox": ("●", "Subject", "Posts", "Last"),
     "log": ("Who", "Action", "Target", "When"),
 }
 
