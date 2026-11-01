@@ -212,7 +212,7 @@ class ThreadModMixin:
         """Re-read the topic around the cursor and merge (worker-safe)."""
         cur = self.stream.current
         try:
-            fresh = self.app.client.topic(self._tid, near_post=cur.number if cur else None)
+            fresh = self.app.client.topic(self._tid, near_post=cur.number if cur else None, deleted=self.app.site.is_staff)
         except ApiError:
             return
         self.app.call_from_thread(self._merge, fresh)

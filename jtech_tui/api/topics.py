@@ -63,11 +63,12 @@ class TopicsMixin(BaseClient):
 
     # --- a single topic ---
 
-    def topic(self, tid: int, near_post: int | None = None) -> dict:
-        """First chunk of a topic, or the chunk around ``near_post``."""
+    def topic(self, tid: int, near_post: int | None = None, deleted: bool = False) -> dict:
+        """First chunk of a topic, or the chunk around ``near_post``. ``deleted`` includes deleted posts (staff only)."""
+        params = {"show_deleted": "true"} if deleted else None
         if near_post and near_post > 1:
-            return self.get(f"/t/{tid}/{near_post}.json")
-        return self.get(f"/t/{tid}.json")
+            return self.get(f"/t/{tid}/{near_post}.json", params=params)
+        return self.get(f"/t/{tid}.json", params=params)
 
     def posts_by_ids(self, tid: int, ids: list[int]) -> list[dict]:
         out: list[dict] = []

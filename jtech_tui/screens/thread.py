@@ -183,7 +183,7 @@ class ThreadScreen(SolvedPollsMixin, ThreadModMixin, Screen):
             last = self._topic.get("last_read_post_number")
             near = last + 1 if isinstance(last, int) and last > 0 else None
         try:
-            data = self.app.client.topic(self._tid, near_post=near)
+            data = self.app.client.topic(self._tid, near_post=near, deleted=self.app.site.is_staff)
         except ApiError as e:
             self.app.call_from_thread(self._load_failed, e)
             return
@@ -490,7 +490,9 @@ class ThreadScreen(SolvedPollsMixin, ThreadModMixin, Screen):
 
     def action_toggle_collapse(self) -> None:
         e = self._current()
-        if e is not None and not e.is_small:
+        if e is not None and e.is_deleted:
+            self.stream.toggle_fold(self.stream.cursor)
+        elif e is not None and not e.is_small:
             e.collapsed = not e.collapsed
             self.stream.refresh_entry(e)
 
@@ -682,6 +684,9 @@ class ThreadScreen(SolvedPollsMixin, ThreadModMixin, Screen):
 
     def action_react(self) -> None:
         e = self._current()
+        if e is not None and e.is_deleted:
+            self.stream.toggle_fold(self.stream.cursor)
+            return
         if e is None or e.is_small:
             return
         if e.post.get("yours"):
@@ -862,7 +867,7 @@ class ThreadScreen(SolvedPollsMixin, ThreadModMixin, Screen):
     @work(thread=True, exclusive=True, group="poll")
     def _poll_worker(self, near: int) -> None:
         try:
-            fresh = self.app.client.topic(self._tid, near_post=near)
+            fresh = self.app.client.topic(self._tid, near_post=near, deleted=self.app.site.is_staff)
         except ApiError:
             return
         self.app.call_from_thread(self._merge, fresh)

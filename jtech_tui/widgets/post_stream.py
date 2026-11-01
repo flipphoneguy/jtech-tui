@@ -53,8 +53,8 @@ class Entry:
     """One post plus its render cache."""
 
     __slots__ = (
-        "post", "collapsed", "reveal", "expand", "reply_to_user",
-        "_width", "_body", "_rendered", "_header", "_extra", "height",
+        "post", "collapsed", "reveal", "expand", "reply_to_user", "fold", "run",
+        "_width", "_body", "_rendered", "_header", "_extra", "height", "shown",
     )
 
     def __init__(self, post: dict, reply_to_user: str | None = None) -> None:
@@ -63,12 +63,18 @@ class Entry:
         self.collapsed: bool | None = None
         self.reveal = False
         self.expand = False
+        # Deleted posts (staff see them) start folded into one "N deleted posts" line.
+        self.fold = True
+        # Set on the first of a folded run: how many posts the line stands for.
+        self.run = 0
         self._width = -1
         self._body: list[Strip] = []
         self._rendered: Rendered | None = None
         self._header: dict[tuple[bool, bool], Strip] = {}
         self._extra: list[Strip] = []
         self.height = 0
+        # Height on screen: ``height``, or the fold line, or 0 inside a folded run.
+        self.shown = 0
 
     @property
     def id(self) -> int:
@@ -81,6 +87,14 @@ class Entry:
     @property
     def is_small(self) -> bool:
         return self.post.get("post_type") == 3
+
+    @property
+    def is_deleted(self) -> bool:
+        return bool(self.post.get("deleted_at"))
+
+    @property
+    def folded(self) -> bool:
+        return self.is_deleted and self.fold
 
     @property
     def is_whisper(self) -> bool:
@@ -266,6 +280,28 @@ class PostStream(ScrollView, can_focus=True):
     def loaded_numbers(self) -> list[int]:
         return [e.number for e in self.entries]
 
+    # --- deleted post folding ---
+
+    def _fold_head(self, idx: int) -> int:
+        while idx > 0 and self.entries[idx].shown == 0:
+            idx -= 1
+        return idx
+
+    def toggle_fold(self, idx: int) -> None:
+        """Fold or unfold the run of deleted posts around ``idx``."""
+        lo = hi = idx
+        while lo > 0 and self.entries[lo - 1].is_deleted:
+            lo -= 1
+        while hi + 1 < len(self.entries) and self.entries[hi + 1].is_deleted:
+            hi += 1
+        fold = not self.entries[idx].fold
+        for e in self.entries[lo:hi + 1]:
+            e.fold = fold
+            e._header.clear()
+        self.cursor = lo
+        self._relayout(None)
+        self.move_to(lo)
+
     # --- layout ---
 
     def _ensure(self, e: Entry, width: int) -> None:
@@ -320,10 +356,24 @@ class PostStream(ScrollView, can_focus=True):
         width = self._content_width()
         starts: list[int] = []
         y = 0
+        head: Entry | None = None
         for e in self.entries:
             self._ensure(e, width)
+            e.run = 0
+            if e.folded and head is not None:
+                head.run += 1
+                e.shown = 0
+            elif e.folded:
+                head = e
+                e.run = 1
+                e.shown = 2
+            else:
+                head = None
+                e.shown = e.height
             starts.append(y)
-            y += e.height
+            y += e.shown
+        if 0 <= self.cursor < len(self.entries) and self.entries[self.cursor].shown == 0:
+            self.cursor = self._fold_head(self.cursor)
         self._starts = starts
         self._total = y
         # Reserve a screen of space while more posts exist below, so any post can sit at the top and arriving posts fill it without moving anything.
@@ -401,7 +451,8 @@ class PostStream(ScrollView, can_focus=True):
         if p.get("accepted_answer"):
             t.append(" · ✓ solution", style=C["solved"])
         if p.get("deleted_at") or p.get("user_deleted"):
-            t.append(" · deleted", style=C["deleted"])
+            by = (p.get("deleted_by") or {}).get("username")
+            t.append(f" · deleted by @{by}" if by else " · deleted", style=C["deleted"])
         if p.get("hidden"):
             t.append(" · hidden", style=C["deleted"])
         return t
@@ -473,6 +524,23 @@ class PostStream(ScrollView, can_focus=True):
         e._header[key] = strip
         return strip
 
+    def _fold_strip(self, e: Entry, selected: bool, width: int) -> Strip:
+        key = (selected, True)
+        cached = e._header.get(key)
+        if cached is not None:
+            return cached
+        n = e.run
+        label = f" {n} deleted post{'s' if n != 1 else ''} · x to show "
+        style = C["rule_sel"] if selected else C["deleted"]
+        side = max(2, (width - len(label)) // 2)
+        line = Text("─" * side, style=style)
+        line.append(label, style=C["deleted"] if not selected else C["bar_sel"])
+        line.append("─" * max(0, width - side - len(label)), style=style)
+        line.truncate(width)
+        strip = Strip(line.render(self.app.console)).crop(0, width)
+        e._header[key] = strip
+        return strip
+
     # --- painting ---
 
     def render_line(self, y: int) -> Strip:
@@ -489,6 +557,8 @@ class PostStream(ScrollView, can_focus=True):
         e = self.entries[idx]
         row = abs_y - self._starts[idx]
         selected = idx == self.cursor
+        if e.folded:
+            return self._fold_strip(e, selected, width) if row == 0 else Strip.blank(width)
         if row == 0:
             return self._header_strip(e, selected, width)
         if e.is_small:
@@ -528,7 +598,7 @@ class PostStream(ScrollView, can_focus=True):
 
     def _span(self, idx: int) -> tuple[int, int]:
         start = self._starts[idx]
-        return start, start + self.entries[idx].height - 1  # drop the blank separator
+        return start, start + max(1, self.entries[idx].shown) - 1  # drop the blank separator
 
     def move_to(self, idx: int, align: str = "auto") -> None:
         if not self.entries:
@@ -572,11 +642,19 @@ class PostStream(ScrollView, can_focus=True):
             self.scroll_to(y=min(top + max(1, h - 2), end - h), animate=False, force=True)
             self._report_seen()
             return
-        if self.cursor >= len(self.entries) - 1:
+        nxt = self._step(self.cursor, 1)
+        if nxt is None:
             if self.more_below:
                 self.post_message(self.NeedMore(self, "below"))
             return
-        self.move_to(self.cursor + 1)
+        self.move_to(nxt)
+
+    def _step(self, idx: int, d: int) -> int | None:
+        """The next post on screen from ``idx`` in direction ``d``, skipping ones inside a folded run."""
+        i = idx + d
+        while 0 <= i < len(self.entries) and self.entries[i].shown == 0:
+            i += d
+        return i if 0 <= i < len(self.entries) else None
 
     def action_cursor_up(self) -> None:
         if not self.entries:
@@ -587,11 +665,11 @@ class PostStream(ScrollView, can_focus=True):
         if start < top:
             self.scroll_to(y=max(start, top - max(1, h - 2)), animate=False, force=True)
             return
-        if self.cursor == 0:
+        prev = self._step(self.cursor, -1)
+        if prev is None:
             if self.more_above:
                 self.post_message(self.NeedMore(self, "above"))
             return
-        prev = self.cursor - 1
         ps, pe = self._span(prev)
         self.move_to(prev, align="bottom" if pe - ps > h else "auto")
 
@@ -611,7 +689,7 @@ class PostStream(ScrollView, can_focus=True):
         start, end = self._span(self.cursor) if self.cursor < len(self.entries) else (0, 0)
         if end < top or start >= top + h:
             idx = max(0, bisect_right(self._starts, top) - 1)
-            if self._starts[idx] + self.entries[idx].height - 1 <= top and idx + 1 < len(self.entries):
+            if self._starts[idx] + self.entries[idx].shown - 1 <= top and idx + 1 < len(self.entries):
                 idx += 1
             if idx != self.cursor:
                 old = self.cursor

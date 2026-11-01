@@ -342,7 +342,7 @@ class MainScreen(StaffTabMixin, SearchTabMixin, Screen):
         try:
             last_read = topic.get("last_read_post_number")
             near_post = last_read + 1 if isinstance(last_read, int) and last_read > 0 else None
-            data = self.app.client.topic(tid, near_post=near_post)
+            data = self.app.client.topic(tid, near_post=near_post, deleted=self.app.site.is_staff)
         except ApiError:
             return
         self.app.call_from_thread(self._store_prefetch, tid, data)

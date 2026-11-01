@@ -65,7 +65,11 @@ class SolvedPollsMixin:
                 client.accept_answer(post_id)
             else:
                 client.unaccept_answer(post_id)
-            fresh = client.topic(self._tid, near_post=self.stream.current.number if self.stream.current else None)
+            fresh = client.topic(
+                self._tid,
+                near_post=self.stream.current.number if self.stream.current else None,
+                deleted=self.app.site.is_staff,
+            )
             ids = [post_id] + ([old["id"]] if old.get("id") and old["id"] != post_id else [])
             posts = client.posts_by_ids(self._tid, ids)
         except ApiError as e:

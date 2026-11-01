@@ -138,6 +138,8 @@ Everything here appears only when you're signed in as staff, and each item only 
 
 In a review item, `enter` shows the available actions. Ones that need a form on the website (suspend, silence, delete user) open the website instead.
 
+In threads, deleted posts show as one `─── N deleted posts ───` line. `x` or `enter` on it shows them with who deleted each one, and again folds them back. `m` on a deleted post can recover it.
+
 **In a thread**
 
 | Key | Action |
