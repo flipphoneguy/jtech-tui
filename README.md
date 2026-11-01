@@ -52,6 +52,8 @@ Each topic shows ✓ solved, 📌 pinned, 🔒 closed and 🔥 hot markers, with
 
 A yellow dot means a new topic you haven't opened. A cyan dot with a cyan count means unread posts in a topic you track or watch. Topics you don't track still show their unread count, in plain text and without a dot. Fully read topics are grey.
 
+Boxes that ask for a username, tag or topic suggest matches as you type. `↑` / `↓` move through them, `tab` or `enter` picks one, and `esc` closes the list. For a topic, type part of its title and the pick fills in its number.
+
 | Key | Action |
 |---|---|
 | `tab` / `shift+tab`, `←` / `→` on the tab bar | Switch tabs |

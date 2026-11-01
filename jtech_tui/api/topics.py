@@ -114,6 +114,15 @@ class TopicsMixin(BaseClient):
 
     # --- search ---
 
+    def user_search(self, term: str) -> list[dict]:
+        return self.get("/u/search/users.json", params={"term": term}).get("users") or []
+
+    def tag_search(self, q: str) -> list[dict]:
+        return self.get("/tags/filter/search.json", params={"q": q}).get("results") or []
+
+    def topic_search(self, term: str) -> list[dict]:
+        return self.get("/search/query.json", params={"term": term, "type_filter": "topic"}).get("topics") or []
+
     def search(self, query: str, page: int = 1) -> dict:
         params: dict[str, Any] = {"q": query}
         if page > 1:

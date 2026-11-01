@@ -8,6 +8,7 @@ from rich.text import Text
 from textual import work
 from textual.widgets import DataTable, Input
 
+from .. import complete
 from ..api import ApiError
 from ..util import parse_duration, parse_when, time_ago, truncate
 from .composer import MenuModal, PromptModal
@@ -161,9 +162,9 @@ class SearchTabMixin:
                 ]
                 self.app.push_screen(MenuModal("Search in category", items), self._add_category)
             elif choice == "user":
-                self._ask_token("Posted by username:", lambda v: "@" + v.lstrip("@"))
+                self._ask_token("Posted by username:", lambda v: "@" + v.lstrip("@"), complete.users(self.app))
             elif choice == "tag":
-                self._ask_token("Tag:", lambda v: "tags:" + v.lstrip("#"))
+                self._ask_token("Tag:", lambda v: "tags:" + v.lstrip("#"), complete.tags(self.app))
             elif choice in ("after", "before"):
                 def fmt(v: str, kind: str = choice) -> str | None:
                     secs = parse_duration(v)
@@ -201,14 +202,14 @@ class SearchTabMixin:
             words.append(token)
         self._set_query(" ".join(words))
 
-    def _ask_token(self, title: str, fmt) -> None:
+    def _ask_token(self, title: str, fmt, suggest=None) -> None:
         def done(v: str | None) -> None:
             if v:
                 tok = fmt(v.strip())
                 if tok:
                     self._add_token(tok)
 
-        self.app.push_screen(PromptModal(title), done)
+        self.app.push_screen(PromptModal(title, complete=suggest), done)
 
     def _add_category(self, choice: str | None) -> None:
         if not choice:

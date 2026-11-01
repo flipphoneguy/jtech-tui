@@ -8,6 +8,9 @@ from textual.screen import ModalScreen
 from textual.widgets import Input, Label, OptionList, Static
 from textual.widgets.option_list import Option
 
+from ..complete import users
+from ..widgets.suggest_box import Fetch, SuggestBox
+
 
 class ReactionModal(ModalScreen[str | None]):
     """Pick a reaction to toggle on a post. Returns the reaction id or None.
@@ -185,7 +188,9 @@ class PMComposerModal(ModalScreen[dict | None]):
     def compose(self) -> ComposeResult:
         with Vertical(id="modal-box"):
             yield Static("New private message", id="modal-title")
-            yield Input(placeholder="Recipient usernames (comma separated)", id="to")
+            yield SuggestBox(
+                users(self.app), placeholder="Recipient usernames (comma separated)", input_id="to", seps=","
+            )
             yield Input(placeholder="Subject", id="title")
             yield Static("enter on subject to continue · esc cancel", id="modal-hint")
 
@@ -320,17 +325,40 @@ class PromptModal(ModalScreen[str | None]):
 
     BINDINGS = [Binding("escape", "dismiss_none", "Cancel")]
 
-    def __init__(self, title: str, placeholder: str = "", value: str = "", hint: str = "") -> None:
+    def __init__(
+        self,
+        title: str,
+        placeholder: str = "",
+        value: str = "",
+        hint: str = "",
+        *,
+        complete: Fetch | None = None,
+        seps: str = "",
+        min_chars: int = 1,
+    ) -> None:
         super().__init__()
         self._title = title
         self._placeholder = placeholder
         self._value = value
         self._hint = hint or "enter confirm · esc cancel"
+        self._complete = complete
+        self._seps = seps
+        self._min_chars = min_chars
 
     def compose(self) -> ComposeResult:
         with Vertical(id="modal-box"):
             yield Static(self._title, id="modal-title")
-            yield Input(value=self._value, placeholder=self._placeholder, id="prompt")
+            if self._complete is None:
+                yield Input(value=self._value, placeholder=self._placeholder, id="prompt")
+            else:
+                yield SuggestBox(
+                    self._complete,
+                    value=self._value,
+                    placeholder=self._placeholder,
+                    input_id="prompt",
+                    seps=self._seps,
+                    min_chars=self._min_chars,
+                )
             yield Static(self._hint, id="modal-hint")
 
     def on_mount(self) -> None:

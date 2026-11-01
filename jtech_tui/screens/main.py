@@ -23,6 +23,7 @@ from .smart_footer import SmartFooter
 from ..render import plain_text
 from ..util import copy_to_clipboard, time_ago as _pretty_time, truncate as _truncate
 
+from .. import complete
 from ..api import ApiError
 from ..editor import edit_markdown
 from .composer import (
@@ -801,7 +802,7 @@ class MainScreen(StaffTabMixin, SearchTabMixin, Screen):
                         self._filters[feed] = ("tag", tag.lstrip("#").strip())
                         self._load_feed(feed)
 
-                self.app.push_screen(PromptModal("Filter by tag:", "tag name"), got)
+                self.app.push_screen(PromptModal("Filter by tag:", "tag name", complete=complete.tags(self.app)), got)
                 return
             self._load_feed(feed)
 

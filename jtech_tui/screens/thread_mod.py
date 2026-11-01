@@ -8,6 +8,7 @@ from rich.console import Group
 from rich.text import Text
 from textual import work
 
+from .. import complete
 from ..api import ApiError, whisper_fields
 from ..editor import edit_markdown
 from ..render import render_cooked
@@ -203,12 +204,14 @@ class ThreadModMixin:
             return
         self.app.call_from_thread(self._merge, fresh)
 
-    def _ask(self, title: str, then: Callable[[str], None], *, placeholder: str = "", value: str = "", hint: str = "") -> None:
+    def _ask(
+        self, title: str, then: Callable[[str], None], *, placeholder: str = "", value: str = "", hint: str = "", **suggest
+    ) -> None:
         def done(v: str | None) -> None:
             if v is not None:
                 then(v)
 
-        self.app.push_screen(PromptModal(title, placeholder, value, hint), done)
+        self.app.push_screen(PromptModal(title, placeholder, value, hint, **suggest), done)
 
     def _confirm(self, question: str, then: Callable[[], None]) -> None:
         def done(ok: bool | None) -> None:
@@ -294,6 +297,8 @@ class ThreadModMixin:
             lambda text: self._convert_whisper(e, text),
             placeholder="@user, group, badge:Name (empty = staff only)",
             value=prefill,
+            complete=complete.audience(self.app),
+            seps=",",
         )
 
     def _post_whisper_retarget(self, e: "Entry") -> None:
@@ -306,6 +311,8 @@ class ThreadModMixin:
             lambda text: self._convert_whisper(e, text),
             value=", ".join(cur),
             placeholder="@user, group, badge:Name (empty = staff only)",
+            complete=complete.audience(self.app),
+            seps=",",
         )
 
     @work(thread=True, group="mod")
@@ -335,6 +342,7 @@ class ThreadModMixin:
                 lambda: self.app.client.add_whisper_participant(self._tid, e.id, name.lstrip("@")),
                 post_id=e.id,
             ),
+            complete=complete.users(self.app),
         )
 
     def _post_viewers(self, e: "Entry") -> None:
@@ -393,6 +401,7 @@ class ThreadModMixin:
                     on_ok=on_ok,
                 ),
             ),
+            complete=complete.users(self.app),
         )
 
     def _post_move(self, e: "Entry") -> None:
@@ -431,7 +440,9 @@ class ThreadModMixin:
         self._ask(
             f"Move {what} to:",
             go,
-            placeholder="topic number or link, or  new: Title of new topic",
+            placeholder="topic title, number or link, or  new: Title of new topic",
+            complete=complete.topics(self.app),
+            min_chars=3,
         )
 
     def _post_history(self, e: "Entry") -> None:
@@ -530,6 +541,8 @@ class ThreadModMixin:
             lambda text: self._whisper_resolve(text, reply_to),
             value=prefill,
             placeholder="@user, group, badge:Name (empty = staff only)",
+            complete=complete.audience(self.app),
+            seps=",",
         )
 
     @work(thread=True, group="mod")
@@ -689,6 +702,8 @@ class ThreadModMixin:
                 after="topic",
             ),
             value=" ".join(cur),
+            complete=complete.tags(self.app),
+            seps=" ,",
         )
 
     def _topic_slow(self) -> None:
@@ -750,7 +765,9 @@ class ThreadModMixin:
                 lambda: self._run("Merge", lambda: self.app.client.merge_topic(self._tid, tid), after="topic"),
             )
 
-        self._ask("Merge into topic:", go, placeholder="topic number or link")
+        self._ask(
+            "Merge into topic:", go, placeholder="topic title, number or link", complete=complete.topics(self.app), min_chars=3
+        )
 
     def _topic_delete(self) -> None:
         self._confirm(
