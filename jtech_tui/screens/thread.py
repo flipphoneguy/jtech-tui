@@ -53,6 +53,8 @@ class ThreadScreen(SolvedPollsMixin, ThreadModMixin, Screen):
         Binding("Q", "quote_reply", "Quote"),
         Binding("m", "post_menu", "Mod post"),
         Binding("M", "topic_menu", "Mod topic"),
+        Binding("c", "check", "Select"),
+        Binding("C", "check_range", "Select range"),
         Binding("w", "whisper", "Whisper"),
         Binding("exclamation_mark", "flag", "Flag"),
         Binding("plus,enter", "react", "React"),
@@ -337,6 +339,10 @@ class ThreadScreen(SolvedPollsMixin, ThreadModMixin, Screen):
     # --- navigation ---
 
     def action_back(self) -> None:
+        if self.stream.checked:
+            self.stream.set_checked(set())
+            self.app.notify("Selection cleared.")
+            return
         self.app.pop_screen()
 
     def action_reload(self) -> None:

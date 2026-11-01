@@ -74,20 +74,107 @@ class ThreadModMixin:
     # --- availability ---
 
     def check_action(self, action: str, parameters: tuple) -> bool | None:
-        if action in ("post_menu", "topic_menu", "whisper"):
+        if action in ("post_menu", "topic_menu", "whisper", "check", "check_range"):
             return self.app.site.is_staff
         return True
 
+    # --- selection ---
+
+    _check_anchor: int | None = None
+
+    def action_check(self) -> None:
+        e = self._current()
+        if e is None or e.is_small:
+            return
+        ids = set(self.stream.checked)
+        ids ^= {e.id}
+        self._check_anchor = e.id if e.id in ids else None
+        self.stream.set_checked(ids)
+        self._check_count(len(ids))
+
+    def action_check_range(self) -> None:
+        e = self._current()
+        if e is None:
+            return
+        s = self.stream
+        anchor = next((i for i, x in enumerate(s.entries) if x.id == self._check_anchor), None)
+        lo, hi = sorted((s.cursor, s.cursor if anchor is None else anchor))
+        ids = set(s.checked) | {x.id for x in s.entries[lo:hi + 1] if not x.is_small}
+        self._check_anchor = e.id
+        s.set_checked(ids)
+        self._check_count(len(ids))
+
+    def _check_count(self, n: int) -> None:
+        if n:
+            self.app.notify(f"{n} selected · m for actions · esc clears", timeout=2)
+
+    def _checked_entries(self) -> list["Entry"]:
+        return [x for x in self.stream.entries if x.id in self.stream.checked]
+
+    def _bulk_menu(self) -> None:
+        ids = sorted(self.stream.checked, key=lambda i: self._ids.index(i) if i in self._ids else 0)
+        n = len(ids)
+        what = f"{n} post{'s' if n != 1 else ''}"
+        details = self._data.get("details") or {}
+        items: list[tuple[str, str]] = []
+        if details.get("can_move_posts"):
+            items.append(("move", f"Move {what} to another topic…"))
+        items.append(("owner", f"Change owner of {what}…"))
+        items.append(("delete", f"Delete {what}"))
+        e = self._current(warn=False)
+        if e is not None and not e.is_small:
+            items.append(("single", f"Menu for post #{e.number} only"))
+        items.append(("clear", "Clear selection"))
+
+        def done(choice: str | None) -> None:
+            if choice == "move":
+                self._move_ids(ids, what)
+            elif choice == "owner":
+                self._owner_ids(ids, what)
+            elif choice == "delete":
+                self._delete_ids(ids, what)
+            elif choice == "single":
+                self._single_post_menu()
+            elif choice == "clear":
+                self.stream.set_checked(set())
+
+        self.app.push_screen(MenuModal(f"Selected · {what}", items), done)
+
+    def _bulk_done(self) -> None:
+        self.stream.set_checked(set())
+        self._check_anchor = None
+
+    def _delete_ids(self, ids: list[int], what: str) -> None:
+        loaded = self._checked_entries()
+        if any(x.number == 1 for x in loaded):
+            self.app.notify("The first post is selected. Delete the topic from M instead.", severity="warning")
+            return
+        if any(not x.post.get("can_delete") for x in loaded):
+            self.app.notify("Some selected posts can't be deleted.", severity="warning")
+            return
+
+        self._confirm(
+            f"Delete {what}?",
+            lambda: self._run("Delete", lambda: self.app.client.delete_posts(ids), after="topic", on_ok=self._bulk_done),
+        )
+
     # --- shared plumbing ---
 
-    def _run(self, label: str, fn: Callable[[], object], after: str = "post", post_id: int | None = None) -> None:
-        self._mod_worker(label, fn, after, post_id)
+    def _run(
+        self,
+        label: str,
+        fn: Callable[[], object],
+        after: str = "post",
+        post_id: int | None = None,
+        on_ok: Callable[[], None] | None = None,
+    ) -> None:
+        self._mod_worker(label, fn, after, post_id, on_ok)
 
     @work(thread=True, group="mod")
-    def _mod_worker(self, label: str, fn, after: str, post_id: int | None) -> None:
-        self._do(label, fn, after, post_id)
+    def _mod_worker(self, label: str, fn, after: str, post_id: int | None, on_ok=None) -> None:
+        self._do(label, fn, after, post_id, on_ok)
 
-    def _do(self, label: str, fn, after: str, post_id: int | None) -> None:
+    def _do(self, label: str, fn, after: str, post_id: int | None, on_ok=None) -> None:
         """Run an API call, report it, and refresh what it changed. Call from a worker thread."""
         try:
             fn()
@@ -95,6 +182,8 @@ class ThreadModMixin:
             self.app.call_from_thread(self.app.report_error, e, label)
             return
         self.app.call_from_thread(self.app.notify, f"{label}: done.")
+        if on_ok is not None:
+            self.app.call_from_thread(on_ok)
         if after == "post" and post_id:
             try:
                 fresh = self.app.client.posts_by_ids(self._tid, [post_id])
@@ -131,6 +220,12 @@ class ThreadModMixin:
     # --- post menu ---
 
     def action_post_menu(self) -> None:
+        if self.stream.checked:
+            self._bulk_menu()
+        else:
+            self._single_post_menu()
+
+    def _single_post_menu(self) -> None:
         e = self._current()
         if e is None or e.is_small:
             return
@@ -282,45 +377,59 @@ class ThreadModMixin:
         self._run("Wiki", lambda: self.app.client.set_wiki(e.id, on), post_id=e.id)
 
     def _post_owner(self, e: "Entry") -> None:
+        self._owner_ids([e.id], f"post #{e.number}", post_id=e.id)
+
+    def _owner_ids(self, ids: list[int], what: str, post_id: int | None = None) -> None:
+        on_ok = None if post_id else self._bulk_done
         self._ask(
-            f"Change owner of post #{e.number} · new owner username:",
+            f"Change owner of {what} · new owner username:",
             lambda name: name and self._confirm(
-                f"Make @{name.lstrip('@')} the author of post #{e.number}?",
+                f"Make @{name.lstrip('@')} the author of {what}?",
                 lambda: self._run(
                     "Change owner",
-                    lambda: self.app.client.change_owner(self._tid, [e.id], name.lstrip("@")),
-                    post_id=e.id,
+                    lambda: self.app.client.change_owner(self._tid, ids, name.lstrip("@")),
+                    after="post" if post_id else "topic",
+                    post_id=post_id,
+                    on_ok=on_ok,
                 ),
             ),
         )
 
     def _post_move(self, e: "Entry") -> None:
+        self._move_ids([e.id], f"post #{e.number}", single=True)
+
+    def _move_ids(self, ids: list[int], what: str, single: bool = False) -> None:
+        on_ok = None if single else self._bulk_done
+
         def go(target: str) -> None:
             if not target:
                 return
             tid = topic_id_from(target)
             if tid:
                 self._confirm(
-                    f"Move post #{e.number} to topic {tid}?",
+                    f"Move {what} to topic {tid}?",
                     lambda: self._run(
-                        "Move", lambda: self.app.client.move_posts(self._tid, [e.id], destination_topic_id=tid), after="topic"
+                        "Move",
+                        lambda: self.app.client.move_posts(self._tid, ids, destination_topic_id=tid),
+                        after="topic",
+                        on_ok=on_ok,
                     ),
                 )
             elif target.lower().startswith("new:"):
                 title = target[4:].strip()
                 self._confirm(
-                    f"Move post #{e.number} into a new topic “{title}”?",
+                    f"Move {what} into a new topic “{title}”?",
                     lambda: self._run(
                         "Move", lambda: self.app.client.move_posts(
-                            self._tid, [e.id], title=title, category_id=self._data.get("category_id")
-                        ), after="topic",
+                            self._tid, ids, title=title, category_id=self._data.get("category_id")
+                        ), after="topic", on_ok=on_ok,
                     ),
                 )
             else:
                 self.app.notify("Give a topic number/link, or new: Title", severity="warning")
 
         self._ask(
-            f"Move post #{e.number} to:",
+            f"Move {what} to:",
             go,
             placeholder="topic number or link, or  new: Title of new topic",
         )

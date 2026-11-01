@@ -139,6 +139,7 @@ In a review item, `enter` shows the available actions. Ones that need a form on 
 | Key | Action |
 |---|---|
 | `m` | Post menu: edit with reason, delete or recover, turn into a whisper or back, change the whisper's audience, add someone to it, see who's read it, pin to the bottom of the topic, wiki, change owner, move to another topic, edit history, flags, user tools |
+| `c` / `C` | Select or unselect the post / select every post from the last one you selected to here. While posts are selected, `m` moves, deletes or changes the owner of all of them, and `esc` clears the selection. |
 | `M` | Topic menu: close, pin (in category or globally, until a date), unlist, archive, title, category, tags, slow mode, timers, footer message, merge, delete or recover |
 | `w` | Whisper reply. Asks who it's for first (`@user, moderators, badge:Name`; empty means staff only). Whispers show a 🔒 label and their audience. |
 

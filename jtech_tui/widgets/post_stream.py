@@ -45,6 +45,7 @@ C = {
     "solved": "bold #87d787",
     "deleted": "#d75f5f",
     "small": "#8a8a8a italic",
+    "checked": "bold #ffaf00",
 }
 
 
@@ -65,7 +66,7 @@ class Entry:
         self._width = -1
         self._body: list[Strip] = []
         self._rendered: Rendered | None = None
-        self._header: dict[bool, Strip] = {}
+        self._header: dict[tuple[bool, bool], Strip] = {}
         self._extra: list[Strip] = []
         self.height = 0
 
@@ -144,6 +145,8 @@ class PostStream(ScrollView, can_focus=True):
         self.my_username = site.username if site is not None else ""
         self.more_above = False
         self.more_below = False
+        # Post ids picked for bulk actions.
+        self.checked: set[int] = set()
         self._seen: set[int] = set()
         self._pending_top = False
 
@@ -227,6 +230,14 @@ class PostStream(ScrollView, can_focus=True):
         else:
             self.cursor = min(self.cursor, max(0, len(self.entries) - 1))
         self._relayout(anchor)
+
+    def set_checked(self, ids: set[int]) -> None:
+        changed = self.checked ^ ids
+        self.checked = set(ids)
+        for e in self.entries:
+            if e.id in changed:
+                e._header.clear()
+        self.refresh()
 
     def refresh_entry(self, entry: Entry) -> None:
         anchor = self._anchor()
@@ -434,7 +445,8 @@ class PostStream(ScrollView, can_focus=True):
         return t if t.plain else None
 
     def _header_strip(self, e: Entry, selected: bool, width: int) -> Strip:
-        key = selected
+        checked = e.id in self.checked
+        key = (selected, checked)
         cached = e._header.get(key)
         if cached is not None:
             return cached
@@ -444,6 +456,8 @@ class PostStream(ScrollView, can_focus=True):
         ch = "━" if selected else "─"
         lead = "┏" + ch if selected else ch + ch
         info = self._header_text(e)
+        if checked:
+            info = Text.assemble(("◉ ", C["checked"]), info)
         num = Text(f" #{e.number} " if not e.is_small else " ", style=C["meta"] if not selected else C["bar_sel"])
         avail = width - 3 - num.cell_len - 3
         info.truncate(max(5, avail), overflow="ellipsis")

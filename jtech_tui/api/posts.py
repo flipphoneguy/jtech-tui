@@ -39,6 +39,9 @@ class PostsMixin(BaseClient):
     def delete_post(self, post_id: int) -> None:
         self.delete(f"/posts/{post_id}.json")
 
+    def delete_posts(self, post_ids: list[int]) -> None:
+        self.delete("/posts/destroy_many", params={"post_ids[]": post_ids})
+
     def recover_post(self, post_id: int) -> None:
         self.put(f"/posts/{post_id}/recover.json")
 
