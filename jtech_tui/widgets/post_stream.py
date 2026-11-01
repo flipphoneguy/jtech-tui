@@ -225,6 +225,7 @@ class PostStream(ScrollView, can_focus=True):
         anchor = self._anchor()
         cur = self.entries[self.cursor] if self.entries else None
         self.entries = [e for e in self.entries if e.id not in ids]
+        self.checked -= ids
         if cur is not None and cur in self.entries:
             self.cursor = self.entries.index(cur)
         else:

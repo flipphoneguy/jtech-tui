@@ -146,15 +146,28 @@ class ThreadModMixin:
         self._check_anchor = None
 
     def _delete_ids(self, ids: list[int], what: str) -> None:
+        # The selection outlives jumps and reloads, so check by id, not by what's on screen.
         loaded = self._checked_entries()
-        if any(x.number == 1 for x in loaded):
+        if (self._ids and self._ids[0] in ids) or any(x.number == 1 for x in loaded):
             self.app.notify("The first post is selected. Delete the topic from M instead.", severity="warning")
             return
-        if any(not x.post.get("can_delete") for x in loaded):
-            self.app.notify("Some selected posts can't be deleted.", severity="warning")
-            return
+        self._delete_check_worker(ids, what, [x.post for x in loaded])
 
-        self._confirm(
+    @work(thread=True, group="mod")
+    def _delete_check_worker(self, ids: list[int], what: str, posts: list[dict]) -> None:
+        have = {p.get("id") for p in posts}
+        missing = [i for i in ids if i not in have]
+        if missing:
+            try:
+                posts = posts + self.app.client.posts_by_ids(self._tid, missing)
+            except ApiError as e:
+                self.app.call_from_thread(self.app.report_error, e, "Delete")
+                return
+        if len(posts) < len(ids) or any(not p.get("can_delete") for p in posts):
+            self.app.call_from_thread(self.app.notify, "Some selected posts can't be deleted.", severity="warning")
+            return
+        self.app.call_from_thread(
+            self._confirm,
             f"Delete {what}?",
             lambda: self._run("Delete", lambda: self.app.client.delete_posts(ids), after="topic", on_ok=self._bulk_done),
         )
