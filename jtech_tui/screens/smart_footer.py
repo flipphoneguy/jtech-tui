@@ -9,6 +9,8 @@ from textual.screen import ModalScreen
 from textual.widget import Widget
 from textual.widgets import Static
 
+from .composer import FitsScreen
+
 
 _KEY_NAMES = {
     "escape": "esc",
@@ -53,7 +55,7 @@ def collect_screen_bindings(screen, app) -> list[tuple[str, str]]:
     return out
 
 
-class BindingsHelpModal(ModalScreen[None]):
+class BindingsHelpModal(FitsScreen, ModalScreen[None]):
     """Lists every visible binding on the current screen."""
 
     BINDINGS = [

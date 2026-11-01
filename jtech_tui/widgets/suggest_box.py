@@ -110,6 +110,9 @@ class SuggestBox(Vertical):
         ol.add_options([Option(label) for _, label in self._items])
         ol.highlighted = 0
         self.add_class("open")
+        fit = getattr(self.screen, "fit_box", None)
+        if fit is not None:
+            fit()
 
     def _close(self) -> None:
         self._items = []

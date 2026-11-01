@@ -12,7 +12,37 @@ from ..complete import users
 from ..widgets.suggest_box import Fetch, SuggestBox
 
 
-class ReactionModal(ModalScreen[str | None]):
+class FitsScreen:
+    """Shrinks the list in ``#modal-box`` when the box doesn't fit the screen, so the list scrolls instead of running off the bottom."""
+
+    def on_resize(self) -> None:
+        self.fit_box()
+
+    def fit_box(self, reset: bool = True) -> None:
+        box = next(iter(self.query("#modal-box")), None)
+        if box is None:
+            return
+        lists = [w for w in box.query("OptionList, VerticalScroll") if w.display]
+        hint = next(iter(box.query("#modal-hint")), None)
+        if reset:
+            for w in lists:
+                w.styles.max_height = None
+            if hint is not None:
+                hint.display = True
+            self.call_after_refresh(self.fit_box, False)
+            return
+        over = box.virtual_size.height - box.scrollable_content_region.height
+        # The key hint goes first, then the list shrinks.
+        if over > 0 and hint is not None and hint.display:
+            hint.display = False
+            self.call_after_refresh(self.fit_box, False)
+            return
+        if over > 0 and lists:
+            big = max(lists, key=lambda w: w.outer_size.height)
+            big.styles.max_height = max(3, big.outer_size.height - over)
+
+
+class ReactionModal(FitsScreen, ModalScreen[str | None]):
     """Pick a reaction to toggle on a post. Returns the reaction id or None.
 
     ``reactions`` comes from the topic's ``valid_reactions``; ``mine`` is the reaction the user already has on the post (selecting it again removes it).
@@ -60,7 +90,7 @@ class ReactionModal(ModalScreen[str | None]):
         self.dismiss(None)
 
 
-class ReactorsModal(ModalScreen[None]):
+class ReactorsModal(FitsScreen, ModalScreen[None]):
     """Show who reacted to a post (per-reaction grouping)."""
 
     BINDINGS = [
@@ -91,7 +121,7 @@ class ReactorsModal(ModalScreen[None]):
         self.dismiss(None)
 
 
-class CopyMenuModal(ModalScreen[tuple[str, int] | None]):
+class CopyMenuModal(FitsScreen, ModalScreen[tuple[str, int] | None]):
     """Pick what to copy from a post. Returns ('link', 0), ('code', i) or ('url', i)."""
 
     BINDINGS = [Binding("escape", "dismiss_none", "Cancel")]
@@ -132,7 +162,7 @@ class CopyMenuModal(ModalScreen[tuple[str, int] | None]):
         self.dismiss(None)
 
 
-class NewTopicModal(ModalScreen[dict | None]):
+class NewTopicModal(FitsScreen, ModalScreen[dict | None]):
     """Ask for topic title + category; returns {title, category_id} or None."""
 
     BINDINGS = [
@@ -178,7 +208,7 @@ class NewTopicModal(ModalScreen[dict | None]):
         self.dismiss(None)
 
 
-class PMComposerModal(ModalScreen[dict | None]):
+class PMComposerModal(FitsScreen, ModalScreen[dict | None]):
     """Ask for PM title + recipient usernames; returns {title, recipients}."""
 
     BINDINGS = [
@@ -213,7 +243,7 @@ class PMComposerModal(ModalScreen[dict | None]):
         self.dismiss(None)
 
 
-class SearchModal(ModalScreen[str | None]):
+class SearchModal(FitsScreen, ModalScreen[str | None]):
     BINDINGS = [
         Binding("escape", "dismiss_none", "Cancel"),
     ]
@@ -235,7 +265,7 @@ class SearchModal(ModalScreen[str | None]):
         self.dismiss(None)
 
 
-class MenuModal(ModalScreen[str | None]):
+class MenuModal(FitsScreen, ModalScreen[str | None]):
     """Pick one action. ``items`` are ``(id, label)``; an id of ``""`` is a non-selectable heading."""
 
     BINDINGS = [Binding("escape,q", "dismiss_none", "Cancel")]
@@ -273,7 +303,7 @@ class MenuModal(ModalScreen[str | None]):
         self.dismiss(None)
 
 
-class ChecklistModal(ModalScreen[list[str] | None]):
+class ChecklistModal(FitsScreen, ModalScreen[list[str] | None]):
     """Tick several items. ``items`` are ``(id, label, checked)``. Returns the ticked ids or None."""
 
     BINDINGS = [
@@ -320,7 +350,7 @@ class ChecklistModal(ModalScreen[list[str] | None]):
         self.dismiss(None)
 
 
-class PromptModal(ModalScreen[str | None]):
+class PromptModal(FitsScreen, ModalScreen[str | None]):
     """Ask for one line of text. Returns the text (possibly empty) or None on cancel."""
 
     BINDINGS = [Binding("escape", "dismiss_none", "Cancel")]
@@ -371,7 +401,7 @@ class PromptModal(ModalScreen[str | None]):
         self.dismiss(None)
 
 
-class TextModal(ModalScreen[None]):
+class TextModal(FitsScreen, ModalScreen[None]):
     """Read-only scrollable text (edit history, flags, user info)."""
 
     BINDINGS = [Binding("escape,q", "close", "Close")]
@@ -395,7 +425,7 @@ class TextModal(ModalScreen[None]):
         self.dismiss(None)
 
 
-class ConfirmModal(ModalScreen[bool]):
+class ConfirmModal(FitsScreen, ModalScreen[bool]):
     """Yes/No confirmation. Returns True/False."""
 
     BINDINGS = [
@@ -420,7 +450,7 @@ class ConfirmModal(ModalScreen[bool]):
         self.dismiss(False)
 
 
-class FilePickerModal(ModalScreen[str | None]):
+class FilePickerModal(FitsScreen, ModalScreen[str | None]):
     """Ask for a file path to upload."""
 
     BINDINGS = [Binding("escape", "dismiss_none", "Cancel")]
@@ -446,7 +476,7 @@ class FilePickerModal(ModalScreen[str | None]):
         self.dismiss(None)
 
 
-class CategoryPickerModal(ModalScreen[dict | None]):
+class CategoryPickerModal(FitsScreen, ModalScreen[dict | None]):
     """Pick a single category. Used when drilling in from the Categories tab."""
 
     BINDINGS = [Binding("escape", "dismiss_none", "Cancel")]
