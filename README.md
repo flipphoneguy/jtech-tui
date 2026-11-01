@@ -60,6 +60,7 @@ Each topic shows ✓ solved, 📌 pinned, 🔒 closed and 🔥 hot markers, with
 | `f` | Filter Latest or Unseen by category or tag; on Search, open the filter menu |
 | `w` | Watch, track, normal or mute the highlighted topic |
 | `D` | Dismiss everything on Unseen |
+| `y` | Copy the highlighted notification's link (handy for ones that can't open in the app) |
 | `/` | Search |
 | `N` / `M` | New topic / new private message |
 | `P` | Your profile |
@@ -129,7 +130,7 @@ Open a profile with `u` on a post, `P` for your own, or from any list of users.
 
 Everything here appears only when you're signed in as staff, and each item only when the server allows it.
 
-**Staff tab** (`←` / `→` switch sections): **Review** (the review queue), **Notes** (jtech's staff notes and events feed), **Mod inbox** (the moderators group messages) and **Log** (staff actions). The tab badge counts pending reviews plus unread notes, live.
+**Staff tab** (`←` / `→` switch sections): **Review** (the review queue), **Notes** (jtech's staff notes and events feed), **Mod inbox** (the moderators group messages) and **Log** (staff actions). The tab badge counts pending reviews plus unread notes, live. The "messages in your moderators inbox" notification opens the Mod inbox section.
 
 In a review item, `enter` shows the available actions. Ones that need a form on the website (suspend, silence, delete user) open the website instead.
 

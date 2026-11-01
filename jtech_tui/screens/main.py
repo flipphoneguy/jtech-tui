@@ -21,7 +21,7 @@ from textual.widgets import (
 from .smart_footer import SmartFooter
 
 from ..render import plain_text
-from ..util import time_ago as _pretty_time, truncate as _truncate
+from ..util import copy_to_clipboard, time_ago as _pretty_time, truncate as _truncate
 
 from ..api import ApiError
 from ..editor import edit_markdown
@@ -169,6 +169,7 @@ class MainScreen(StaffTabMixin, SearchTabMixin, Screen):
         Binding("f", "filter", "Filter"),
         Binding("w", "topic_level", "Watch…"),
         Binding("D", "dismiss_unseen", "Dismiss"),
+        Binding("y", "copy_link", "Copy link"),
         Binding("ctrl+right", "next_tab", "Next tab", show=False),
         Binding("ctrl+left", "prev_tab", "Prev tab", show=False),
         Binding("down", "tabs_down", "", show=False),
@@ -665,6 +666,54 @@ class MainScreen(StaffTabMixin, SearchTabMixin, Screen):
         self._restore_cursor(t, prev)
         self._update_notif_badge()
 
+    def _is_mod_inbox_notif(self, n: dict) -> bool:
+        name = self.app.site.notification_types.get(n.get("notification_type"))
+        group = (n.get("data") or {}).get("group_name")
+        return self.app.site.is_staff and name == "group_message_summary" and group == "moderators"
+
+    @work(thread=True, group="notif-read")
+    def _notif_read_worker(self, n: dict) -> None:
+        try:
+            self.app.client.mark_notification_read(n.get("id"))
+        except ApiError:
+            return
+        n["read"] = True
+        self.app.call_from_thread(self._populate_notifications, self._notifications_cache)
+
+    def _notif_url(self, n: dict) -> str:
+        base = self.app.client.base_url
+        data = n.get("data") or {}
+        if n.get("topic_id"):
+            slug = n.get("slug") or "-"
+            pn = n.get("post_number")
+            return f"{base}/t/{slug}/{n['topic_id']}" + (f"/{pn}" if isinstance(pn, int) and pn > 0 else "")
+        name = self.app.site.notification_types.get(n.get("notification_type"))
+        if name == "group_message_summary" and data.get("group_name"):
+            user = data.get("username") or self.app.site.username or self.app.cfg.username
+            return f"{base}/u/{user}/messages/group/{data['group_name']}"
+        if data.get("badge_id"):
+            return f"{base}/badges/{data['badge_id']}/{data.get('badge_slug') or '-'}"
+        url = data.get("url") or ""
+        if url:
+            return url if url.startswith("http") else base + url
+        return ""
+
+    def action_copy_link(self) -> None:
+        if self._current_tab_id() != "tab-notifications":
+            return
+        t = self.query_one("#tbl-notifications", DataTable)
+        try:
+            key = t.coordinate_to_cell_key((t.cursor_row, 0)).row_key.value
+        except Exception:  # noqa: BLE001
+            return
+        url = self._notif_url(self._topic_cache.get(key or "", {}))
+        if not url:
+            self.app.notify("No link for this notification.", severity="warning")
+        elif copy_to_clipboard(url):
+            self.app.notify(f"Copied: {url}")
+        else:
+            self.app.notify("No clipboard tool found.", severity="warning")
+
     def _update_notif_badge(self, count: int | None = None) -> None:
         if count is None:
             count = sum(1 for n in self._notifications_cache if not n.get("read"))
@@ -843,6 +892,10 @@ class MainScreen(StaffTabMixin, SearchTabMixin, Screen):
                 post_number = notif.get("post_number")
                 target = post_number if isinstance(post_number, int) and post_number > 0 else None
                 self.app.push_screen(ThreadScreen(topic, target_post=target))
+            elif self._is_mod_inbox_notif(notif):
+                self._open_mod_inbox()
+                if not notif.get("read"):
+                    self._notif_read_worker(notif)
         elif not self._search_row_selected(key):
             self._staff_row_selected(key)
 

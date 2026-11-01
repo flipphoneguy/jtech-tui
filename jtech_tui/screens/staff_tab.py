@@ -102,6 +102,15 @@ class StaffTabMixin:
         self._render_sections()
         self._load_staff()
 
+    def _open_mod_inbox(self) -> None:
+        self._staff_section = "inbox"
+        tabs = self.query_one("#tabs", TabbedContent)
+        if tabs.active == "tab-staff":
+            self._load_staff()
+        else:
+            tabs.active = "tab-staff"
+        self.call_after_refresh(self.query_one("#tbl-staff", DataTable).focus)
+
     def _load_staff(self) -> None:
         self._render_sections()
         sec = self._staff_section
