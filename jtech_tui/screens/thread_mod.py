@@ -580,7 +580,8 @@ class ThreadModMixin:
         if not body:
             self.app.notify("Empty whisper, not sent.", severity="warning")
             return
-        self._whisper_send(body, reply_to, whisper_fields(aud.user_ids, aud.group_ids, aud.badge_ids))
+        extra = whisper_fields(aud.user_ids, aud.group_ids, aud.badge_ids)
+        self.app.check_mentions(body, lambda b: self._whisper_send(b, reply_to, extra))
 
     @work(thread=True, group="post")
     def _whisper_send(self, body: str, reply_to: int | None, extra: dict) -> None:

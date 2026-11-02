@@ -44,8 +44,10 @@ class SuggestBox(Vertical):
         input_id: str | None = None,
         seps: str = "",
         min_chars: int = 1,
+        open_now: bool = False,
     ) -> None:
         super().__init__()
+        self._open_now = open_now
         self._fetch = fetch
         self._value = value
         self._placeholder = placeholder
@@ -62,6 +64,12 @@ class SuggestBox(Vertical):
         ol = OptionList()
         ol.can_focus = False
         yield ol
+
+    def on_mount(self) -> None:
+        # Suggest for a prefilled word straight away.
+        word = self._word()[1]
+        if self._open_now and len(word) >= self._min:
+            self._load(word)
 
     @property
     def input(self) -> Input:

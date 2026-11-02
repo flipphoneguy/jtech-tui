@@ -54,6 +54,8 @@ A yellow dot means a new topic you haven't opened. A cyan dot with a cyan count 
 
 Boxes that ask for a username, tag or topic suggest matches as you type. `↑` / `↓` move through them, `tab` or `enter` picks one, and `esc` closes the list. For a topic, type part of its title and the pick fills in its number.
 
+When you send a post, any @mention that isn't a user or group (or a lone `@`) gets a box with name suggestions before it goes out. Pick the person you meant, or `esc` to leave it as typed. So you can type `@` or part of a name in your editor and fill it in on the way out.
+
 | Key | Action |
 |---|---|
 | `tab` / `shift+tab`, `←` / `→` on the tab bar | Switch tabs |

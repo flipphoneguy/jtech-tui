@@ -365,6 +365,7 @@ class PromptModal(FitsScreen, ModalScreen[str | None]):
         complete: Fetch | None = None,
         seps: str = "",
         min_chars: int = 1,
+        open_now: bool = False,
     ) -> None:
         super().__init__()
         self._title = title
@@ -374,6 +375,7 @@ class PromptModal(FitsScreen, ModalScreen[str | None]):
         self._complete = complete
         self._seps = seps
         self._min_chars = min_chars
+        self._open_now = open_now
 
     def compose(self) -> ComposeResult:
         with Vertical(id="modal-box"):
@@ -388,6 +390,7 @@ class PromptModal(FitsScreen, ModalScreen[str | None]):
                     input_id="prompt",
                     seps=self._seps,
                     min_chars=self._min_chars,
+                    open_now=self._open_now,
                 )
             yield Static(self._hint, id="modal-hint")
 

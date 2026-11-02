@@ -954,7 +954,7 @@ class MainScreen(StaffTabMixin, SearchTabMixin, Screen):
             if not body:
                 self.app.notify("Empty body — not posted.", severity="warning")
                 return
-            self._submit_topic(result["title"], body, result["category_id"])
+            self.app.check_mentions(body, lambda b: self._submit_topic(result["title"], b, result["category_id"]))
 
         self.app.push_screen(NewTopicModal(cats), _done)
 
@@ -982,7 +982,7 @@ class MainScreen(StaffTabMixin, SearchTabMixin, Screen):
             if not body:
                 self.app.notify("Empty body — not sent.", severity="warning")
                 return
-            self._submit_pm(result["title"], body, result["recipients"])
+            self.app.check_mentions(body, lambda b: self._submit_pm(result["title"], b, result["recipients"]))
 
         self.app.push_screen(PMComposerModal(), _done)
 

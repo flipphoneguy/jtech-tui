@@ -533,7 +533,7 @@ class ThreadScreen(SolvedPollsMixin, ThreadModMixin, Screen):
         if not body:
             self.app.notify("Empty reply, not posted.", severity="warning")
             return
-        self._submit_reply(body, reply_to, key)
+        self.app.check_mentions(body, lambda b: self._submit_reply(b, reply_to, key))
 
     def action_reply(self) -> None:
         if not self._data:
@@ -798,7 +798,7 @@ class ThreadScreen(SolvedPollsMixin, ThreadModMixin, Screen):
         if body == raw.strip():
             self.app.notify("No changes.")
             return
-        self._submit_edit(int(post["id"]), body, reason)
+        self.app.check_mentions(body, lambda b: self._submit_edit(int(post["id"]), b, reason))
 
     @work(thread=True, group="post")
     def _submit_edit(self, post_id: int, body: str, reason: str) -> None:

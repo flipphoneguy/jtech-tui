@@ -11,6 +11,7 @@ from textual.binding import Binding
 from .api import ApiError, Client, RateLimited, Unauthorized
 from .config import Config
 from .live import LiveBus
+from .mentions import replace_mention, unknown_mentions
 from .site import Site
 from .util import copy_to_clipboard, open_url
 
@@ -63,6 +64,46 @@ class JtechApp(App):
 
     def open_url(self, url: str, *, new_tab: bool = True) -> None:
         open_url(url)
+
+    def check_mentions(self, body: str, send) -> None:
+        """Offer a fix for each @mention that isn't a user or group, then ``send(body)``. Call from the UI thread."""
+        self._mention_worker(body, send)
+
+    @work(thread=True, group="mentions")
+    def _mention_worker(self, body: str, send) -> None:
+        try:
+            bad = unknown_mentions(self.client, body)
+        except ApiError:
+            # Can't check, so don't hold the post back.
+            bad = []
+        self.call_from_thread(self._fix_mentions, body, bad, send)
+
+    def _fix_mentions(self, body: str, bad: list[str], send) -> None:
+        if not bad:
+            send(body)
+            return
+        from . import complete
+        from .screens.composer import PromptModal
+
+        name, rest = bad[0], bad[1:]
+
+        def done(v: str | None) -> None:
+            new = (v or "").strip().lstrip("@")
+            fixed = replace_mention(body, name, new) if new and new != name else body
+            self._fix_mentions(fixed, rest, send)
+
+        title = f"@{name} isn't a user here." if name else "There's an @ with no name after it."
+        self.push_screen(
+            PromptModal(
+                f"{title} Pick who you meant, or esc to leave it.",
+                "username",
+                name,
+                "enter use this · esc leave as typed",
+                complete=complete.users(self),
+                open_now=True,
+            ),
+            done,
+        )
 
     def copy_link(self, url: str) -> None:
         if not url:
