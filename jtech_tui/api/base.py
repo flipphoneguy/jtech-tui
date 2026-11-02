@@ -74,6 +74,8 @@ class BaseClient:
         self._csrf_lock = threading.Lock()
         self._on_cookie_change = on_cookie_change
         self._last_cookie = session_cookie
+        # Whether the user is at the keyboard. Discourse only updates "last seen" on requests that say so.
+        self.present: Callable[[], bool] = lambda: False
         if session_cookie:
             self.session.cookies.set("_t", session_cookie, domain=self.host)
 
@@ -154,6 +156,8 @@ class BaseClient:
     ) -> Any:
         """Send a request and return parsed JSON (or ``{}`` for empty bodies)."""
         headers = {"Accept": "application/json", "X-Requested-With": "XMLHttpRequest"}
+        if self.present():
+            headers["Discourse-Present"] = "true"
         write = method.upper() != "GET"
         attempt = 0
         while True:

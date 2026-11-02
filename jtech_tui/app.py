@@ -16,6 +16,10 @@ from .site import Site
 from .util import copy_to_clipboard, open_url
 
 
+# No key or tap for this long and you count as away.
+IDLE_SECONDS = 60.0
+
+
 class JtechApp(App):
     CSS_PATH = "styles.tcss"
     TITLE = "jtech forums"
@@ -40,7 +44,7 @@ class JtechApp(App):
         self.quotes: dict[int, list[str]] = {}
         self._live_user: int | None = None
         self._last_toast_id = 0
-        # Monotonic time of the last key or tap; read tracking pauses when this gets old.
+        # Monotonic time of the last key or tap; see present().
         self.last_input = time.monotonic()
 
     async def on_event(self, event: events.Event) -> None:
@@ -48,8 +52,14 @@ class JtechApp(App):
             self.last_input = time.monotonic()
         await super().on_event(event)
 
+    def present(self) -> bool:
+        """Pressed something lately. Read time only counts, and the site only marks you online, while this holds."""
+        return time.monotonic() - self.last_input < IDLE_SECONDS
+
     def _make_client(self, cookie: str) -> Client:
-        return Client(self.cfg.forum_url, cookie, on_cookie_change=self._cookie_rotated)
+        client = Client(self.cfg.forum_url, cookie, on_cookie_change=self._cookie_rotated)
+        client.present = self.present
+        return client
 
     def _cookie_rotated(self, cookie: str) -> None:
         # Discourse rotates _t every few minutes; keep the newest so restarts stay logged in.

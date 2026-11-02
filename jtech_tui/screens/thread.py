@@ -37,8 +37,6 @@ POLL_SECONDS = 120.0
 PREFETCH_FRESH = 60.0
 # The server caps each timings report at 60s, so send well before that.
 READ_FLUSH_SECONDS = 30.0
-# No key or tap for this long and reading time stops counting.
-IDLE_SECONDS = 60.0
 
 
 def strip_template(text: str) -> str:
@@ -334,7 +332,7 @@ class ThreadScreen(SolvedPollsMixin, ThreadModMixin, Screen):
 
     def _read_tick(self) -> None:
         # Like the site: count only while this topic is on top and you've pressed something lately.
-        if not self.is_current or time.monotonic() - self.app.last_input > IDLE_SECONDS:
+        if not self.is_current or not self.app.present():
             return
         self._topic_ms += 1000
         for n in self.stream.visible_numbers():
