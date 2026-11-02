@@ -359,6 +359,9 @@ class PostStream(ScrollView, can_focus=True):
         head: Entry | None = None
         for e in self.entries:
             self._ensure(e, width)
+            if e.run:
+                # The fold line's count is cached with the header.
+                e._header.clear()
             e.run = 0
             if e.folded and head is not None:
                 head.run += 1
@@ -688,9 +691,12 @@ class PostStream(ScrollView, can_focus=True):
         h = self._view_h()
         start, end = self._span(self.cursor) if self.cursor < len(self.entries) else (0, 0)
         if end < top or start >= top + h:
-            idx = max(0, bisect_right(self._starts, top) - 1)
-            if self._starts[idx] + self.entries[idx].shown - 1 <= top and idx + 1 < len(self.entries):
-                idx += 1
+            # Posts inside a folded run share a start, so land on the fold line instead.
+            idx = self._fold_head(max(0, bisect_right(self._starts, top) - 1))
+            if self._starts[idx] + self.entries[idx].shown - 1 <= top:
+                nxt = self._step(idx, 1)
+                if nxt is not None:
+                    idx = nxt
             if idx != self.cursor:
                 old = self.cursor
                 self.cursor = idx

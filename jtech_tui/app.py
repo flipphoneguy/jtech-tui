@@ -90,7 +90,7 @@ class JtechApp(App):
             bad = []
         self.call_from_thread(self._fix_mentions, body, bad, send)
 
-    def _fix_mentions(self, body: str, bad: list[str], send) -> None:
+    def _fix_mentions(self, body: str, bad: list[str], send, lone_kept: int = 0) -> None:
         if not bad:
             send(body)
             return
@@ -101,8 +101,11 @@ class JtechApp(App):
 
         def done(v: str | None) -> None:
             new = (v or "").strip().lstrip("@")
-            fixed = replace_mention(body, name, new) if new and new != name else body
-            self._fix_mentions(fixed, rest, send)
+            if new and new != name:
+                self._fix_mentions(replace_mention(body, name, new, lone_kept), rest, send, lone_kept)
+            else:
+                # A lone @ left as is stays in the text, so the next one is further along.
+                self._fix_mentions(body, rest, send, lone_kept + (name == ""))
 
         title = f"@{name} isn't a user here." if name else "There's an @ with no name after it."
         self.push_screen(

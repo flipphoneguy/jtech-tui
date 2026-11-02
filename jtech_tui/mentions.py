@@ -37,11 +37,11 @@ def unknown_mentions(client, body: str) -> list[str]:
     return out
 
 
-def replace_mention(body: str, old: str, new: str) -> str:
-    """Swap ``@old`` for ``@new`` everywhere outside code and quotes; a lone ``@`` only the first time."""
+def replace_mention(body: str, old: str, new: str, skip: int = 0) -> str:
+    """Swap ``@old`` for ``@new`` everywhere outside code and quotes. For a lone ``@``, only the one after ``skip`` that were left alone."""
     hits = [(s, e) for s, e, name in _spans(body) if name == old]
     if not old:
-        hits = hits[:1]
+        hits = hits[skip:skip + 1]
     # Back to front so earlier offsets stay right.
     for start, end in reversed(hits):
         body = body[:start] + "@" + new + body[end:]
