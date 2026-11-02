@@ -91,7 +91,7 @@ Scrolling to the bottom of a list loads the next page.
 | `/` | Find in this topic |
 | `p` | Go to the post this one replies to |
 | `r` / `t` | Reply to the post / to the topic |
-| `Q` | Quote reply |
+| `Q` | Quote: opens the post's text. Move with `hjkl` or arrows (`w`/`b` words, `0`/`$` line, `g`/`G` ends), `v` to start selecting, `enter` to add the selection (or the whole post) to your reply, `y` to copy it. Quotes from several posts pile up, and the next `r` or `t` opens your editor with all of them in order so you can write between them. |
 | `enter` or `+` | React (numbers 1–9 pick in the menu; choosing your own reaction removes it) |
 | `V` | Vote in the post's poll; vote again to change it or remove it |
 | `A` | Mark or unmark the post as the solution (when you're allowed) |

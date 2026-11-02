@@ -16,6 +16,7 @@ from ..api import ApiError
 from ..editor import edit_markdown
 from ..util import copy_to_clipboard, internal_target, truncate
 from ..widgets import Entry, PostStream
+from .quote import QuoteModal
 from .composer import (
     ConfirmModal,
     CopyMenuModal,
@@ -525,9 +526,13 @@ class ThreadScreen(SolvedPollsMixin, ThreadModMixin, Screen):
 
     def _compose_and_send(self, template: str, reply_to: int | None, *, key: str) -> None:
         prev = self.app.unsent.pop(key, None)
+        # Quotes picked with Q go in at the end, a blank line apart, ready to write between.
+        quotes = self.app.quotes.pop(self._tid, [])
         with self.app.suspend():
-            content = edit_markdown(prev or template)
+            content = edit_markdown((prev or template) + "".join(quotes))
         if content is None:
+            if quotes:
+                self.app.quotes[self._tid] = quotes
             return
         body = strip_template(content).strip()
         if not body:
@@ -571,10 +576,20 @@ class ThreadScreen(SolvedPollsMixin, ThreadModMixin, Screen):
     def _open_quote(self, post: dict, raw: str) -> None:
         user = post.get("username", "")
         pn = post.get("post_number")
-        block = f'[quote="{user}, post:{pn}, topic:{self._tid}"]\n{raw.strip()}\n[/quote]\n\n'
-        hint = f"<!-- quoting @{user} (post #{pn}); save & quit to send -->\n\n"
-        reply_to = pn if isinstance(pn, int) and pn > 1 else None
-        self._compose_and_send(hint + block, reply_to, key=f"{self._tid}:q{pn}")
+
+        def done(result: tuple[str, str] | None) -> None:
+            if not result:
+                return
+            kind, text = result
+            if kind == "copy":
+                self._copy(text, "Copied.")
+                return
+            quotes = self.app.quotes.setdefault(self._tid, [])
+            quotes.append(f'[quote="{user}, post:{pn}, topic:{self._tid}"]\n{text}\n[/quote]\n\n')
+            n = len(quotes)
+            self.app.notify(f"{n} quote{'s' if n != 1 else ''} waiting · Q on any post adds more · r or t to write")
+
+        self.app.push_screen(QuoteModal(f"Quote @{user} #{pn}", raw.strip()), done)
 
     @work(thread=True, group="post")
     def _submit_reply(self, body: str, reply_to: int | None, key: str) -> None:

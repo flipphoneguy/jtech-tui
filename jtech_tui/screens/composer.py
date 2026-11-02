@@ -22,7 +22,7 @@ class FitsScreen:
         box = next(iter(self.query("#modal-box")), None)
         if box is None:
             return
-        lists = [w for w in box.query("OptionList, VerticalScroll") if w.display]
+        lists = [w for w in box.query("OptionList, VerticalScroll, TextArea") if w.display]
         hint = next(iter(box.query("#modal-hint")), None)
         if reset:
             for w in lists:

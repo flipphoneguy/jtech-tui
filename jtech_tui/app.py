@@ -36,6 +36,8 @@ class JtechApp(App):
         self.live = LiveBus(self)
         # Text of posts that failed to send, keyed by where they were going; reopened on the next try.
         self.unsent: dict[str, str] = {}
+        # Quotes picked with Q, by topic id, waiting for the next reply there.
+        self.quotes: dict[int, list[str]] = {}
         self._live_user: int | None = None
         self._last_toast_id = 0
         # Monotonic time of the last key or tap; read tracking pauses when this gets old.
