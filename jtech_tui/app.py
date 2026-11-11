@@ -13,6 +13,7 @@ from .config import Config
 from .live import LiveBus
 from .mentions import replace_mention, unknown_mentions
 from .site import Site
+from .unread import UnreadFixer
 from .util import copy_to_clipboard, open_url, topic_title
 
 
@@ -37,6 +38,7 @@ class JtechApp(App):
         self.client: Client = self._make_client(self.cfg.session_cookie)
         self.site = Site(self.client.host)
         self.site.load_cache()
+        self.unread = UnreadFixer(self.client.host, lambda: self.client)
         self.live = LiveBus(self)
         # Text of posts that failed to send, keyed by where they were going; reopened on the next try.
         self.unsent: dict[str, str] = {}
@@ -206,6 +208,7 @@ class JtechApp(App):
 
     def on_unmount(self) -> None:
         self.live.stop()
+        self.unread.save()
 
     def report_error(self, e: Exception, what: str = "") -> None:
         """Show an API error. Call on the main thread."""

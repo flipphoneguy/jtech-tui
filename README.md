@@ -50,7 +50,7 @@ Tabs: **Latest**, **Unseen** (new topics plus topics with unread replies), **Cat
 
 Each topic shows ✓ solved, 📌 pinned, 🔒 closed and 🔥 hot markers, with a second line for category, tags and last poster. The time since the last post sits under the post count.
 
-A yellow dot means a new topic you haven't opened. A cyan dot with a cyan count means unread posts in a topic you track or watch. Topics you don't track still show their unread count, in plain text and without a dot. Fully read topics are grey.
+A yellow dot means a new topic you haven't opened. A cyan dot with a cyan count means unread posts in a topic you track or watch. Topics you don't track still show their unread count, in plain text and without a dot. Fully read topics are grey. The site counts posts that were split off or deleted as unread, so where a topic has gaps in its post numbers the real count is looked up in the background and cached.
 
 Boxes that ask for a username, tag or topic suggest matches as you type. `↑` / `↓` move through them, `tab` or `enter` picks one, and `esc` closes the list. For a topic, type part of its title and the pick fills in its number.
 
@@ -169,7 +169,7 @@ In threads, deleted posts show as one `─── N deleted posts ───` line
 | `username` | | Your username |
 | `password` | | Only saved with "Remember me", in plain text |
 
-Forum data that rarely changes (categories, emoji, notification types) is cached in `~/.cache/jtech-tui/<host>/` and refreshed in the background.
+Forum data that rarely changes (categories, emoji, notification types) is cached in `~/.cache/jtech-tui/<host>/` and refreshed in the background. Real unread counts are kept there too, in `unread.json`.
 
 To use another Discourse site, change `forum_url` and clear `session_cookie`.
 
@@ -180,6 +180,7 @@ jtech_tui/
 ├── api/              Discourse client: requests, errors, endpoints (topics, posts, users, mod, jtech plugin)
 ├── site.py           What the forum and your account allow; emoji names; disk cache
 ├── live.py           MessageBus long polling
+├── unread.py         Real unread counts for topics with gaps, looked up in the background and cached
 ├── render/           Post HTML to terminal text
 ├── widgets/          Thread view and list widgets
 ├── screens/          Main tabs, thread, profile, REQ-PM, staff, review, search, login, dialogs

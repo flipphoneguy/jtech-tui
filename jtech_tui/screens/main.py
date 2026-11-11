@@ -17,6 +17,7 @@ from textual.widgets import (
     TabPane,
     Tabs,
 )
+from textual.widgets.data_table import CellDoesNotExist
 
 from .smart_footer import SmartFooter
 
@@ -59,6 +60,8 @@ TAB_ORDER = (
 
 def _unread_count(topic: dict) -> int:
     """Posts after the last one read. The site only sends this for tracked topics, so work it out the same way for the rest."""
+    if "real_unread" in topic:
+        return topic["real_unread"]
     if topic.get("unread_posts"):
         return topic["unread_posts"]
     last = topic.get("last_read_post_number")
@@ -66,6 +69,16 @@ def _unread_count(topic: dict) -> int:
     if isinstance(last, int) and last > 0 and isinstance(high, int):
         return max(0, high - last)
     return 0
+
+
+def update_topic_row(table: DataTable, key: str, topic: dict, title_w: int, site=None, with_time: bool = False) -> None:
+    """Redraw a topic row's state, title and posts cells in place, so the cursor and scroll stay put."""
+    cells = (_state_cell(topic), _title_cell(topic, title_w, site), _posts_cell(topic, with_time))
+    try:
+        for col, value in zip(table.ordered_columns, cells):
+            table.update_cell(key, col.key, value)
+    except CellDoesNotExist:
+        pass
 
 
 def _topic_state(topic: dict) -> str:
@@ -474,7 +487,16 @@ class MainScreen(StaffTabMixin, SearchTabMixin, Screen):
         except ApiError as e:
             self.app.call_from_thread(self.app.report_error, e, "Load")
             return
+        todo = self.app.unread.apply(topics)
         self.app.call_from_thread(self._populate_feed, feed, topics, more)
+        self.app.unread.fix(todo, lambda t: self.app.call_from_thread(self._feed_unread_fixed, feed, t))
+
+    def _feed_unread_fixed(self, feed: str, topic: dict) -> None:
+        # Skip if the tab was reloaded since; the new rows have their own lookups.
+        if not any(t is topic for t in self._view_data.get(f"feed:{feed}") or []):
+            return
+        t = self.query_one(f"#tbl-{feed}", DataTable)
+        update_topic_row(t, f"topic:{topic.get('id')}", topic, self._title_width(right_reserved=14), self.app.site, with_time=True)
 
     def _populate_feed(self, feed: str, topics: list[dict], has_more: bool = False, *, redraw: bool = False) -> None:
         """Show a freshly loaded first page, or with ``redraw`` just re-render what's loaded (on resize)."""
@@ -516,7 +538,9 @@ class MainScreen(StaffTabMixin, SearchTabMixin, Screen):
             self.app.call_from_thread(self.app.report_error, e, "Load more")
             self._feed_loading_more.discard(feed)
             return
+        todo = self.app.unread.apply(topics)
         self.app.call_from_thread(self._append_feed_page, feed, topics, more, next_page)
+        self.app.unread.fix(todo, lambda t: self.app.call_from_thread(self._feed_unread_fixed, feed, t))
 
     def _append_feed_page(
         self, feed: str, topics: list[dict], has_more: bool, page: int
@@ -620,7 +644,15 @@ class MainScreen(StaffTabMixin, SearchTabMixin, Screen):
         except ApiError as e:
             self.app.call_from_thread(self.app.report_error, e, "Load")
             return
+        todo = self.app.unread.apply(msgs)
         self.app.call_from_thread(self._populate_messages, msgs)
+        self.app.unread.fix(todo, lambda m: self.app.call_from_thread(self._message_unread_fixed, m))
+
+    def _message_unread_fixed(self, m: dict) -> None:
+        if not any(x is m for x in self._view_data.get("messages") or []):
+            return
+        t = self.query_one("#tbl-messages", DataTable)
+        update_topic_row(t, f"topic:{m.get('id')}", m, self._title_width(right_reserved=22))
 
     def _populate_messages(self, msgs: list[dict]) -> None:
         self._view_data["messages"] = msgs
@@ -1077,7 +1109,14 @@ class CategoryTopicsScreen(Screen):
         except ApiError as e:
             self.app.call_from_thread(self.app.report_error, e, "Load")
             return
+        todo = self.app.unread.apply(topics)
         self.app.call_from_thread(self._populate, topics)
+        self.app.unread.fix(todo, lambda t: self.app.call_from_thread(self._unread_fixed, t))
+
+    def _unread_fixed(self, topic: dict) -> None:
+        key = str(topic.get("id"))
+        if self._topics.get(key) is topic:
+            update_topic_row(self.query_one("#tbl-cat", DataTable), key, topic, max(10, (self.size.width or 80) - 26))
 
     def _populate(self, topics: list[dict]) -> None:
         t = self.query_one("#tbl-cat", DataTable)

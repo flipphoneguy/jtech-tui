@@ -78,6 +78,10 @@ class TopicsMixin(BaseClient):
             out.extend((d.get("post_stream") or {}).get("posts") or [])
         return out
 
+    def post_ids_after(self, tid: int, post_number: int) -> list[int]:
+        """Ids of the posts you can see after ``post_number``. Doesn't count as a topic view."""
+        return self.get(f"/t/{tid}/post_ids.json", params={"post_number": post_number}).get("post_ids") or []
+
     def mark_read(self, tid: int, timings: dict[int, int], topic_ms: int) -> None:
         """Report reading time in ms per post number and for the topic; the server uses the total to auto-track."""
         if not timings:

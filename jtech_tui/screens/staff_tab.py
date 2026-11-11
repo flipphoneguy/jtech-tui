@@ -138,7 +138,9 @@ class StaffTabMixin:
         except ApiError as e:
             self.app.call_from_thread(self.app.report_error, e, SECTION_NAMES[sec])
             return
+        todo = self.app.unread.apply(data) if sec == "inbox" else []
         self.app.call_from_thread(self._populate_staff, sec, data)
+        self.app.unread.fix(todo, lambda m: self.app.call_from_thread(self._inbox_unread_fixed, m))
         if sec == "notes" and any(n.get("unread") for n in data):  # type: ignore[union-attr]
             try:
                 client.notes_feed_seen()
@@ -191,6 +193,13 @@ class StaffTabMixin:
                 time_ago(n.get("activity_at") or n.get("created_at")),
                 key=f"note:{i}",
             )
+
+    def _inbox_unread_fixed(self, m: dict) -> None:
+        from .main import update_topic_row
+
+        if self._staff_section == "inbox" and any(x is m for x in self._staff_data.get("inbox") or []):
+            t = self.query_one("#tbl-staff", DataTable)
+            update_topic_row(t, f"topic:{m.get('id')}", m, self._title_width(right_reserved=22))
 
     def _rows_inbox(self, t: DataTable, topics: list[dict]) -> None:
         from .main import _posts_cell, _state_cell, _title_cell
