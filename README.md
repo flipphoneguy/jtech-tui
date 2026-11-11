@@ -9,7 +9,7 @@ Read and reply to threads, react, search, follow people, swap contact cards with
 ## Highlights
 
 - **Live updates.** The app listens on the same MessageBus channel the website uses. New replies show up in the thread you're reading within a second or two, the notification count updates by itself, and Latest/Unseen show how many new topics arrived. A small toast pops up for a few seconds when a notification comes in.
-- **A thread view that stays put.** Threads open on your first unread post and stay there while older posts load above. Posts are drawn line by line, so long threads stay fast.
+- **A thread view that stays put.** Threads open on your first unread post, under a `─── last visit ───` line, and stay there while older posts load above. Posts are drawn line by line, so long threads stay fast.
 - **Posts look like posts.** Quotes show who wrote them, link previews show the site and title, code is highlighted, images show their name and size, spoilers stay hidden until you reveal them, and dates appear in your own timezone.
 - **Polls and solutions.** Vote in polls and see the results, mark a reply as the solution, and jump straight to a topic's solution.
 - **Everything the server allows, nothing it doesn't.** Reactions, flag types, notification types and categories come from the forum itself. Edit, delete and every mod action are offered only when the server says you can do them.

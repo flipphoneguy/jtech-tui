@@ -110,6 +110,8 @@ class ThreadScreen(SolvedPollsMixin, ThreadModMixin, Screen):
         self._topic_ms = 0
         self._live_on = False
         self._live_timer = None
+        # Where you'd read up to when this topic opened; reloads don't move the "last visit" line.
+        self._last_read: int | None = None
 
     # --- setup ---
 
@@ -202,6 +204,9 @@ class ThreadScreen(SolvedPollsMixin, ThreadModMixin, Screen):
         s = self.stream
         s.op_username = ((data.get("details") or {}).get("created_by") or {}).get("username", "")
         s.my_username = self.app.site.username or self.app.cfg.username
+        if self._last_read is None:
+            self._last_read = data.get("last_read_post_number") or self._topic.get("last_read_post_number") or 0
+            s.last_read = self._last_read
         self.query_one("#loader").display = False
         posts = ps.get("posts") or []
         got = {p.get("id") for p in posts}

@@ -44,6 +44,7 @@ C = {
     "react_mine": "bold #1c1c1c on #87afd7",
     "solved": "bold #87d787",
     "deleted": "#d75f5f",
+    "last_visit": "#d7af5f",
     "small": "#8a8a8a italic",
     "checked": "bold #ffaf00",
 }
@@ -163,6 +164,9 @@ class PostStream(ScrollView, can_focus=True):
         self.checked: set[int] = set()
         self._seen: set[int] = set()
         self._pending_top = False
+        # Last post read before this visit; a "last visit" line goes above the next one.
+        self.last_read = 0
+        self._divider: Entry | None = None
 
     # --- data ---
 
@@ -352,11 +356,24 @@ class PostStream(ScrollView, can_focus=True):
         text.truncate(width, overflow="ellipsis")
         return Strip(text.render(self.app.console))
 
+    def _divider_index(self) -> int | None:
+        """Where the "last visit" line goes: the first unread post, or the fold line it's hidden under."""
+        if not self.last_read:
+            return None
+        for i, e in enumerate(self.entries):
+            if e.number > self.last_read:
+                while i > 0 and self.entries[i].folded and self.entries[i - 1].folded:
+                    i -= 1
+                return i
+        return None
+
     def _relayout(self, anchor: tuple[Entry, int] | None) -> None:
         width = self._content_width()
         starts: list[int] = []
         y = 0
         head: Entry | None = None
+        div = self._divider_index()
+        self._divider = self.entries[div] if div is not None else None
         for e in self.entries:
             self._ensure(e, width)
             if e.run:
@@ -373,6 +390,8 @@ class PostStream(ScrollView, can_focus=True):
             else:
                 head = None
                 e.shown = e.height
+            if e is self._divider:
+                e.shown += 1
             starts.append(y)
             y += e.shown
         if 0 <= self.cursor < len(self.entries) and self.entries[self.cursor].shown == 0:
@@ -544,6 +563,15 @@ class PostStream(ScrollView, can_focus=True):
         e._header[key] = strip
         return strip
 
+    def _divider_strip(self, width: int) -> Strip:
+        label = " last visit "
+        side = max(2, (width - len(label)) // 2)
+        line = Text("─" * side, style=C["last_visit"])
+        line.append(label, style=C["last_visit"])
+        line.append("─" * max(0, width - side - len(label)), style=C["last_visit"])
+        line.truncate(width)
+        return Strip(line.render(self.app.console)).crop(0, width)
+
     # --- painting ---
 
     def render_line(self, y: int) -> Strip:
@@ -560,6 +588,10 @@ class PostStream(ScrollView, can_focus=True):
         e = self.entries[idx]
         row = abs_y - self._starts[idx]
         selected = idx == self.cursor
+        if e is self._divider:
+            if row == 0:
+                return self._divider_strip(width)
+            row -= 1
         if e.folded:
             return self._fold_strip(e, selected, width) if row == 0 else Strip.blank(width)
         if row == 0:
