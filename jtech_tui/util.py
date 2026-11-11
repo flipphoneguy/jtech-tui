@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import re
 import shutil
 import subprocess
@@ -103,6 +104,16 @@ def topic_id_from(s: str) -> int | None:
         return int(s)
     m = _TOPIC_PATH.search(s)
     return int(m.group(1)) if m else None
+
+
+def topic_title(d: dict) -> str:
+    """Plain topic title; Discourse's ``fancy_title`` is HTML-escaped (``&ldquo;`` etc.)."""
+    return (
+        d.get("title")
+        or html.unescape(d.get("fancy_title") or "")
+        or (d.get("data") or {}).get("topic_title")
+        or ""
+    )
 
 
 def truncate(s: str, width: int) -> str:

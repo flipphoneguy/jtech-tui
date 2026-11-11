@@ -21,7 +21,7 @@ from textual.widgets import (
 from .smart_footer import SmartFooter
 
 from ..render import plain_text
-from ..util import time_ago as _pretty_time, truncate as _truncate
+from ..util import time_ago as _pretty_time, topic_title, truncate as _truncate
 
 from .. import complete
 from ..api import ApiError
@@ -664,7 +664,7 @@ class MainScreen(StaffTabMixin, SearchTabMixin, Screen):
             tid = n.get("topic_id")
             key = f"notif:{nid}:{tid or ''}"
             self._topic_cache[key] = n
-            title = n.get("fancy_title") or ((n.get("data") or {}).get("topic_title")) or ""
+            title = topic_title(n)
             who = (n.get("data") or {}).get("display_username", "") or ""
             t.add_row(
                 "·" if n.get("read") else "●",
@@ -901,7 +901,7 @@ class MainScreen(StaffTabMixin, SearchTabMixin, Screen):
             if tid:
                 topic = {
                     "id": tid,
-                    "title": notif.get("fancy_title") or (notif.get("data") or {}).get("topic_title", ""),
+                    "title": topic_title(notif),
                 }
                 post_number = notif.get("post_number")
                 target = post_number if isinstance(post_number, int) and post_number > 0 else None

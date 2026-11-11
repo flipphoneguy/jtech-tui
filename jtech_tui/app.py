@@ -13,7 +13,7 @@ from .config import Config
 from .live import LiveBus
 from .mentions import replace_mention, unknown_mentions
 from .site import Site
-from .util import copy_to_clipboard, open_url
+from .util import copy_to_clipboard, open_url, topic_title
 
 
 # No key or tap for this long and you count as away.
@@ -191,7 +191,7 @@ class JtechApp(App):
             self._last_toast_id = nid
             who = (n.get("data") or {}).get("display_username") or (n.get("data") or {}).get("original_username") or ""
             what = self.site.notification_name(n.get("notification_type"))
-            title = n.get("fancy_title") or (n.get("data") or {}).get("topic_title") or ""
+            title = topic_title(n)
             line = f"🔔 {'@' + who + ' ' if who else ''}{what}: {title}"
             self.notify(line[:70], timeout=3, markup=False)
 

@@ -14,7 +14,7 @@ from textual.widgets import Header, LoadingIndicator, Static
 
 from ..api import ApiError
 from ..editor import edit_markdown
-from ..util import copy_to_clipboard, internal_target, truncate
+from ..util import copy_to_clipboard, internal_target, topic_title, truncate
 from ..widgets import Entry, PostStream
 from .quote import QuoteModal
 from .composer import (
@@ -221,7 +221,7 @@ class ThreadScreen(SolvedPollsMixin, ThreadModMixin, Screen):
 
     def _update_header(self) -> None:
         d = self._data or self._topic
-        title = d.get("fancy_title") or d.get("title") or ""
+        title = topic_title(d)
         bits: list[str] = []
         cat = self.app.site.category_label(d.get("category_id"))
         if cat:
