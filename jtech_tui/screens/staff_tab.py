@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from rich.text import Text
 from textual import work
 from textual.widgets import DataTable, Static, TabbedContent
@@ -20,12 +22,29 @@ COLUMNS = {
     "inbox": ("●", "Subject", "Posts", "Last"),
     "log": ("Who", "Action", "Target", "When"),
 }
+# Kinds in the jtech-tools notes feed, in chip order. Unknown kinds only show under All.
+NOTE_KINDS = {
+    "all": "All",
+    "flag_note": "Review",
+    "user_note": "User",
+    "note": "Topic",
+    "post_rejected": "Rejected",
+    "post_deleted": "Deleted",
+}
+NOTE_KIND_LABELS = {
+    "flag_note": "review note",
+    "user_note": "user note",
+    "note": "topic note",
+    "post_rejected": "rejected",
+    "post_deleted": "deleted",
+}
 
 
 class StaffTabMixin:
     """Mixed into MainScreen. Uses its _title_width, _restore_cursor, _topic_cache and table helpers."""
 
     _staff_section = "review"
+    _notes_kind = "all"
     _staff_counts: dict[str, int] = {}
     _staff_data: dict[str, object] = {}
 
@@ -83,8 +102,29 @@ class StaffTabMixin:
         t.append("  ← → switch", style="dim")
         try:
             self.query_one("#staff-sections", Static).update(t)
+            kinds = self.query_one("#staff-kinds", Static)
         except Exception:  # noqa: BLE001
-            pass
+            return
+        kinds.display = self._staff_section == "notes"
+        notes = self._staff_data.get("notes") or []
+        k = Text(" ")
+        for kind, label in NOTE_KINDS.items():
+            n = len(notes) if kind == "all" else sum(1 for x in notes if x.get("kind") == kind)
+            style = "bold reverse" if kind == self._notes_kind else "dim"
+            k.append(f" {label} {n} ", style=style)
+            k.append(" ")
+        k.append("  [ ] kind", style="dim")
+        kinds.update(k)
+
+    def action_notes_kind(self, step: int) -> None:
+        if self._current_tab_id() != "tab-staff" or self._staff_section != "notes":
+            return
+        keys = list(NOTE_KINDS)
+        self._notes_kind = keys[(keys.index(self._notes_kind) + step) % len(keys)]
+        notes = self._staff_data.get("notes")
+        if notes is not None:
+            self._populate_staff("notes", notes)
+            self.query_one("#tbl-staff", DataTable).move_cursor(row=0)
 
     # --- switching ---
 
@@ -176,8 +216,11 @@ class StaffTabMixin:
             )
 
     def _rows_notes(self, t: DataTable, notes: list[dict]) -> None:
+        self._render_sections()
         w = self._title_width(right_reserved=40)
         for i, n in enumerate(notes):
+            if self._notes_kind != "all" and n.get("kind") != self._notes_kind:
+                continue
             what = n.get("topic_title") or ""
             excerpt = plain_text(n.get("excerpt") or "")
             if excerpt:
@@ -187,7 +230,7 @@ class StaffTabMixin:
                 who = f"{who}→{n['target_username']}"
             t.add_row(
                 Text("●", style="bold yellow") if n.get("unread") else Text("·", style="dim"),
-                truncate((n.get("kind") or "note").replace("_", " "), 12),
+                truncate(NOTE_KIND_LABELS.get(n.get("kind") or "", (n.get("kind") or "note").replace("_", " ")), 12),
                 truncate(who, 18),
                 truncate(what, w),
                 time_ago(n.get("activity_at") or n.get("created_at")),
@@ -245,7 +288,14 @@ class StaffTabMixin:
             return True
         if key.startswith("note:"):
             n = (self._staff_data.get("notes") or [])[int(key[5:])]
-            self._open_staff_target(n.get("topic_id"), n.get("url"), n.get("topic_title"))
+            url = n.get("url") or ""
+            m = re.match(r"/review/(\d+)", url)
+            if m:
+                self._open_reviewable(int(m.group(1)))
+            elif n.get("kind") == "user_note" and n.get("target_username"):
+                self._open_user_mod(n["target_username"])
+            else:
+                self._open_staff_target(n.get("topic_id"), url, n.get("topic_title"))
             return True
         if key.startswith("log:"):
             row = (self._staff_data.get("log") or [])[int(key[4:])]
@@ -275,6 +325,28 @@ class StaffTabMixin:
             return f"{base}/t/-/{row['topic_id']}" if row.get("topic_id") else ""
         return ""
 
+    @work(thread=True, group="staff-open")
+    def _open_reviewable(self, rid: int) -> None:
+        try:
+            rd = ReviewData(self.app.client.reviewable(rid))
+        except ApiError as e:
+            self.app.call_from_thread(self.app.report_error, e, "Review item")
+            return
+        if rd.items:
+            self.app.call_from_thread(self.app.push_screen, ReviewItemScreen(rd.items[0], rd))
+
+    @work(thread=True, group="staff-open")
+    def _open_user_mod(self, username: str) -> None:
+        from .user_mod import UserModScreen
+
+        try:
+            uid = self.app.client.user_id(username)
+        except ApiError as e:
+            self.app.call_from_thread(self.app.report_error, e, "User")
+            return
+        if uid:
+            self.app.call_from_thread(self.app.push_screen, UserModScreen(uid, username))
+
     def _open_staff_target(self, topic_id, url, title) -> None:
         from .thread import ThreadScreen
 
@@ -284,8 +356,6 @@ class StaffTabMixin:
             return
         target = None
         if url:
-            import re
-
             m = re.search(r"/t/[^/]+/\d+/(\d+)", url)
             if m:
                 target = int(m.group(1))

@@ -136,7 +136,7 @@ Open a profile with `u` on a post, `P` for your own, or from any list of users.
 
 Everything here appears only when you're signed in as staff, and each item only when the server allows it.
 
-**Staff tab** (`←` / `→` switch sections): **Review** (the review queue), **Notes** (jtech's staff notes and events feed), **Mod inbox** (the moderators group messages) and **Log** (staff actions). The tab badge counts pending reviews plus unread notes, live. The "messages in your moderators inbox" notification opens the Mod inbox section.
+**Staff tab** (`←` / `→` switch sections): **Review** (the review queue), **Notes** (jtech's staff notes and events feed: review notes, user notes, topic notes, rejected and deleted posts; `[` / `]` filter by kind), **Mod inbox** (the moderators group messages) and **Log** (staff actions). The tab badge counts pending reviews plus unread notes, live. The "messages in your moderators inbox" notification opens the Mod inbox section.
 
 In a review item, `enter` shows the available actions. Ones that need a form on the website (suspend, silence, delete user) open the website instead. The post and the staff notes on it scroll like a thread: `n` writes a note in your editor, `D` deletes the highlighted note if it's yours, and `t` opens the topic at that post.
 

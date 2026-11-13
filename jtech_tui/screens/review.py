@@ -35,10 +35,10 @@ WEB_ONLY = ("suspend", "silence", "delete_user", "delete_and_block")
 
 
 class ReviewData:
-    """Index a /review.json response so items can find their users, topics, scores and actions."""
+    """Index a /review.json (or /review/N.json) response so items can find their users, topics, scores and actions."""
 
     def __init__(self, d: dict) -> None:
-        self.items: list[dict] = d.get("reviewables") or []
+        self.items: list[dict] = d.get("reviewables") or ([d["reviewable"]] if d.get("reviewable") else [])
         self.users = {u["id"]: u for u in d.get("users") or []}
         self.topics = {t["id"]: t for t in d.get("topics") or []}
         self.scores = {s["id"]: s for s in d.get("reviewable_scores") or []}

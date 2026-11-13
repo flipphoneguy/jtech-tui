@@ -97,6 +97,9 @@ class ModMixin(BaseClient):
             params["offset"] = offset
         return self.get("/review.json", params=params)
 
+    def reviewable(self, reviewable_id: int) -> dict:
+        return self.get(f"/review/{reviewable_id}.json")
+
     def review_count(self) -> int:
         return int(self.get("/review/count.json").get("count") or 0)
 

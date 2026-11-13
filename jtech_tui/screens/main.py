@@ -200,6 +200,8 @@ class MainScreen(StaffTabMixin, SearchTabMixin, Screen):
         Binding("up", "tabs_up", "", show=False),
         Binding("n", "next_unread", "Next unread", show=False),
         Binding("p", "prev_unread", "Prev unread", show=False),
+        Binding("left_square_bracket", "notes_kind(-1)", "Prev kind", show=False),
+        Binding("right_square_bracket", "notes_kind(1)", "Next kind", show=False),
     ]
 
     def __init__(self) -> None:
@@ -243,6 +245,7 @@ class MainScreen(StaffTabMixin, SearchTabMixin, Screen):
             with TabPane("Staff", id="tab-staff"):
                 with Vertical():
                     yield Static(id="staff-sections")
+                    yield Static(id="staff-kinds")
                     yield VimDataTable(id="tbl-staff", cursor_type="row", zebra_stripes=True)
             with TabPane("Search", id="tab-search"):
                 with Vertical():
