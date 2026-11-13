@@ -138,7 +138,7 @@ Everything here appears only when you're signed in as staff, and each item only 
 
 **Staff tab** (`←` / `→` switch sections): **Review** (the review queue), **Notes** (jtech's staff notes and events feed), **Mod inbox** (the moderators group messages) and **Log** (staff actions). The tab badge counts pending reviews plus unread notes, live. The "messages in your moderators inbox" notification opens the Mod inbox section.
 
-In a review item, `enter` shows the available actions. Ones that need a form on the website (suspend, silence, delete user) open the website instead.
+In a review item, `enter` shows the available actions. Ones that need a form on the website (suspend, silence, delete user) open the website instead. The post and the staff notes on it scroll like a thread: `n` writes a note in your editor, `D` deletes the highlighted note if it's yours, and `t` opens the topic at that post.
 
 In threads, deleted posts show as one `─── N deleted posts ───` line. `x` or `enter` on it shows them with who deleted each one, and again folds them back. `m` on a deleted post can recover it.
 

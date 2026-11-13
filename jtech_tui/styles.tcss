@@ -213,6 +213,14 @@ ModalScreen #checks {
     padding: 0 1;
 }
 
+/* Review item: title and flags on top, the post and its notes in a PostStream below */
+#review-head {
+    height: auto;
+    max-height: 40%;
+    padding: 0 1;
+    background: $panel;
+}
+
 /* Compact toasts: one short line, out of the way */
 Toast {
     padding: 0 1;

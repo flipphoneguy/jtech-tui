@@ -103,6 +103,12 @@ class ModMixin(BaseClient):
     def perform_review(self, reviewable_id: int, action: str, version: int) -> dict:
         return self.put(f"/review/{reviewable_id}/perform/{action}", params={"version": version})
 
+    def add_review_note(self, reviewable_id: int, content: str) -> dict:
+        return self.post(f"/review/{reviewable_id}/notes", {"reviewable_note": {"content": content}})
+
+    def delete_review_note(self, reviewable_id: int, note_id: int) -> None:
+        self.delete(f"/review/{reviewable_id}/notes/{note_id}")
+
     # --- users ---
 
     def admin_user(self, user_id: int) -> dict:
