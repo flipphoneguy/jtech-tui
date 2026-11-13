@@ -68,6 +68,7 @@ class ThreadScreen(SolvedPollsMixin, ThreadModMixin, Screen):
         Binding("o", "open_url", "Browser"),
         Binding("p", "jump_to_parent", "Jump→reply"),
         Binding("number_sign", "jump_number", "Jump #"),
+        Binding("v", "last_visit", "Last visit"),
         Binding("A", "accept", "Solution ✓"),
         Binding("J", "jump_solution", "Go to solution"),
         Binding("V", "vote", "Vote"),
@@ -112,6 +113,8 @@ class ThreadScreen(SolvedPollsMixin, ThreadModMixin, Screen):
         self._live_timer = None
         # Where you'd read up to when this topic opened; reloads don't move the "last visit" line.
         self._last_read: int | None = None
+        # Where v jumped from, so pressing it again goes back.
+        self._visit_back: int | None = None
 
     # --- setup ---
 
@@ -413,6 +416,22 @@ class ThreadScreen(SolvedPollsMixin, ThreadModMixin, Screen):
                 self.jump_to(max(1, min(int(v.strip().lstrip("#")), highest or 10**6)))
 
         self.app.push_screen(PromptModal(f"Jump to post # (1–{highest})", "post number"), done)
+
+    def action_last_visit(self) -> None:
+        if self._visit_back is not None:
+            back, self._visit_back = self._visit_back, None
+            self.jump_to(back)
+            return
+        if not self._last_read:
+            self.app.notify("You hadn't read this topic before.")
+            return
+        e = self._current()
+        highest = self._data.get("highest_post_number") or self._last_read + 1
+        target = min(self._last_read + 1, highest)
+        if e is not None:
+            self._visit_back = e.number
+        self.jump_to(target)
+        self.app.notify("Last visit · v again to go back.")
 
     def action_search_topic(self) -> None:
         def done(q: str | None) -> None:

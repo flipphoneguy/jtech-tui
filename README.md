@@ -88,6 +88,7 @@ Scrolling to the bottom of a list loads the next page.
 | `space` / `b` | Page down / up |
 | `g` / `G` | First / last post of the topic |
 | `#` | Jump to a post number |
+| `v` | Jump to where you left off last visit; `v` again goes back |
 | `/` | Find in this topic |
 | `p` | Go to the post this one replies to |
 | `r` / `t` | Reply to the post / to the topic |
