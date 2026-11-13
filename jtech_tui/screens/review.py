@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import html
-import re
 
 from rich.console import Group
 from rich.text import Text
@@ -17,7 +16,7 @@ from textual.widgets import Header, Static
 from ..api import ApiError
 from ..editor import edit_markdown
 from ..render import plain_text, render_cooked
-from ..util import local_time, time_ago, truncate
+from ..util import internal_target, local_time, time_ago, truncate
 from ..widgets.post_stream import PostStream
 from .composer import ConfirmModal, MenuModal
 from .smart_footer import SmartFooter
@@ -91,6 +90,7 @@ class ReviewItemScreen(Screen):
         Binding("enter,a", "act", "Act"),
         Binding("o", "open", "Browser"),
         Binding("t", "topic", "Topic"),
+        Binding("x", "toggle_collapse", "Collapse"),
         Binding("n", "add_note", "Add note"),
         Binding("D", "delete_note", "Delete note"),
     ]
@@ -110,8 +110,16 @@ class ReviewItemScreen(Screen):
     def on_mount(self) -> None:
         it = self._item
         self.sub_title = f"review · {TYPE_LABELS.get(it.get('type', ''), it.get('type', ''))}"
+        self.query_one("#posts", PostStream).show_numbers = False
         self._show()
         self.query_one("#posts").focus()
+
+    def action_toggle_collapse(self) -> None:
+        stream = self.query_one("#posts", PostStream)
+        e = stream.current
+        if e is not None:
+            e.collapsed = not e.collapsed
+            stream.refresh_entry(e)
 
     def _posts(self) -> list[dict]:
         """The reviewed post, then each note, shaped like topic posts so PostStream can show them."""
@@ -183,8 +191,8 @@ class ReviewItemScreen(Screen):
         tid = self._item.get("topic_id")
         if tid:
             t = self._data.topics.get(tid) or {"id": tid}
-            m = re.search(r"/t/[^/]+/\d+/(\d+)", self._item.get("target_url") or "")
-            self.app.push_screen(ThreadScreen(t, target_post=int(m.group(1)) if m else None))
+            hit = internal_target(self._item.get("target_url") or "", self.app.client.base_url)
+            self.app.push_screen(ThreadScreen(t, target_post=hit[2] if hit and hit[0] == "topic" else None))
 
     def action_act(self) -> None:
         acts = self._data.actions_for(self._item)

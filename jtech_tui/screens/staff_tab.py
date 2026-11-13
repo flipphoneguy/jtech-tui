@@ -10,7 +10,7 @@ from textual.widgets import DataTable, Static, TabbedContent
 
 from ..api import ApiError
 from ..render import plain_text
-from ..util import local_time, time_ago, truncate
+from ..util import internal_target, local_time, time_ago, truncate
 from .composer import TextModal
 from .review import TYPE_LABELS, ReviewData, ReviewItemScreen
 
@@ -238,16 +238,16 @@ class StaffTabMixin:
             )
 
     def _inbox_unread_fixed(self, m: dict) -> None:
-        from .main import update_topic_row
+        from .main import MESSAGE_RESERVED, update_topic_row
 
         if self._staff_section == "inbox" and any(x is m for x in self._staff_data.get("inbox") or []):
             t = self.query_one("#tbl-staff", DataTable)
-            update_topic_row(t, f"topic:{m.get('id')}", m, self._title_width(right_reserved=22))
+            update_topic_row(t, f"topic:{m.get('id')}", m, self._title_width(MESSAGE_RESERVED))
 
     def _rows_inbox(self, t: DataTable, topics: list[dict]) -> None:
-        from .main import _posts_cell, _state_cell, _title_cell
+        from .main import MESSAGE_RESERVED, _posts_cell, _state_cell, _title_cell
 
-        w = self._title_width(right_reserved=22)
+        w = self._title_width(MESSAGE_RESERVED)
         for m in topics:
             key = f"topic:{m.get('id')}"
             self._topic_cache[key] = m
@@ -354,9 +354,6 @@ class StaffTabMixin:
             if url:
                 self.app.open_url(url if url.startswith("http") else self.app.client.base_url + url)
             return
-        target = None
-        if url:
-            m = re.search(r"/t/[^/]+/\d+/(\d+)", url)
-            if m:
-                target = int(m.group(1))
+        hit = internal_target(url or "", self.app.client.base_url)
+        target = hit[2] if hit and hit[0] == "topic" else None
         self.app.push_screen(ThreadScreen({"id": topic_id, "title": title or ""}, target_post=target))

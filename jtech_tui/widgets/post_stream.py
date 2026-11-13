@@ -167,6 +167,8 @@ class PostStream(ScrollView, can_focus=True):
         # Last post read before this visit; a "last visit" line goes above the next one.
         self.last_read = 0
         self._divider: Entry | None = None
+        # Off where entries aren't topic posts (review notes).
+        self.show_numbers = True
 
     # --- data ---
 
@@ -362,6 +364,9 @@ class PostStream(ScrollView, can_focus=True):
             return None
         for i, e in enumerate(self.entries):
             if e.number > self.last_read:
+                if i == 0 and self.more_above:
+                    # The first unread post isn't loaded yet.
+                    return None
                 while i > 0 and self.entries[i].folded and self.entries[i - 1].folded:
                     i -= 1
                 return i
@@ -532,7 +537,7 @@ class PostStream(ScrollView, can_focus=True):
         info = self._header_text(e)
         if checked:
             info = Text.assemble(("◉ ", C["checked"]), info)
-        num = Text(f" #{e.number} " if not e.is_small else " ", style=C["meta"] if not selected else C["bar_sel"])
+        num = Text(f" #{e.number} " if self.show_numbers and not e.is_small else " ", style=C["meta"] if not selected else C["bar_sel"])
         avail = width - 3 - num.cell_len - 3
         info.truncate(max(5, avail), overflow="ellipsis")
         line = Text(lead + " ", style=rule_style)
@@ -553,22 +558,21 @@ class PostStream(ScrollView, can_focus=True):
             return cached
         n = e.run
         label = f" {n} deleted post{'s' if n != 1 else ''} · x to show "
-        style = C["rule_sel"] if selected else C["deleted"]
-        side = max(2, (width - len(label)) // 2)
-        line = Text("─" * side, style=style)
-        line.append(label, style=C["deleted"] if not selected else C["bar_sel"])
-        line.append("─" * max(0, width - side - len(label)), style=style)
-        line.truncate(width)
-        strip = Strip(line.render(self.app.console)).crop(0, width)
+        strip = self._rule_strip(
+            label, C["rule_sel"] if selected else C["deleted"], C["bar_sel"] if selected else C["deleted"], width
+        )
         e._header[key] = strip
         return strip
 
     def _divider_strip(self, width: int) -> Strip:
-        label = " last visit "
+        return self._rule_strip(" last visit ", C["last_visit"], C["last_visit"], width)
+
+    def _rule_strip(self, label: str, style: str, label_style: str, width: int) -> Strip:
+        """A full-width rule with ``label`` in the middle."""
         side = max(2, (width - len(label)) // 2)
-        line = Text("─" * side, style=C["last_visit"])
-        line.append(label, style=C["last_visit"])
-        line.append("─" * max(0, width - side - len(label)), style=C["last_visit"])
+        line = Text("─" * side, style=style)
+        line.append(label, style=label_style)
+        line.append("─" * max(0, width - side - len(label)), style=style)
         line.truncate(width)
         return Strip(line.render(self.app.console)).crop(0, width)
 

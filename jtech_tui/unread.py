@@ -53,6 +53,9 @@ class UnreadFixer:
         self._pause_until = 0.0
         self._queue: queue.Queue[tuple[dict, Callable[[dict], None]]] = queue.Queue()
         self._threads: list[threading.Thread] = []
+        self._save_lock = threading.Lock()
+        # topic id -> set once the lookup running for it finishes
+        self._inflight: dict[str, threading.Event] = {}
 
     def apply(self, topics: list[dict]) -> list[dict]:
         """Fill in counts we already know. Returns the topics still to look up."""
@@ -72,26 +75,29 @@ class UnreadFixer:
         """Look these up in the background, in order; ``done(topic)`` runs on a worker thread after each one."""
         if not topics:
             return
-        if not self._threads:
-            for _ in range(WORKERS):
-                th = threading.Thread(target=self._work, daemon=True)
-                th.start()
-                self._threads.append(th)
+        with self._lock:
+            if not self._threads:
+                for _ in range(WORKERS):
+                    th = threading.Thread(target=self._work, daemon=True)
+                    th.start()
+                    self._threads.append(th)
         for t in topics:
             self._queue.put((t, done))
 
     def save(self) -> None:
-        with self._lock:
-            if not self._dirty:
-                return
-            self._dirty = False
-            text = json.dumps(self._cache)
-        tmp = self._file.with_suffix(".tmp")
-        try:
-            tmp.write_text(text)
-            tmp.replace(self._file)
-        except OSError:
-            pass
+        # Workers and the app's exit can both save; one writer at a time on the temp file.
+        with self._save_lock:
+            with self._lock:
+                if not self._dirty:
+                    return
+                self._dirty = False
+                text = json.dumps(self._cache)
+            tmp = self._file.with_suffix(".tmp")
+            try:
+                tmp.write_text(text)
+                tmp.replace(self._file)
+            except OSError:
+                pass
 
     # --- workers ---
 
@@ -113,6 +119,23 @@ class UnreadFixer:
         if not self.apply([topic]):
             # Another load asked for it first.
             return "real_unread" in topic
+        key = str(topic["id"])
+        with self._lock:
+            running = self._inflight.get(key)
+            if running is None:
+                self._inflight[key] = threading.Event()
+        if running is not None:
+            # The same topic from another list is being looked up right now; use its answer.
+            running.wait()
+            self.apply([topic])
+            return "real_unread" in topic
+        try:
+            return self._fetch(topic)
+        finally:
+            with self._lock:
+                self._inflight.pop(key).set()
+
+    def _fetch(self, topic: dict) -> bool:
         tid = topic["id"]
         for _ in range(2):
             self._take()

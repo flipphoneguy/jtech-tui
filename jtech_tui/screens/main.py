@@ -56,6 +56,10 @@ TAB_ORDER = (
     "tab-staff",
     "tab-search",
 )
+# Columns beside the title, shared by the row builders and the in-place unread redraws.
+FEED_RESERVED = 14  # state(3) + posts with time under it(11)
+MESSAGE_RESERVED = 22
+CATEGORY_RESERVED = 26
 
 
 def _unread_count(topic: dict) -> int:
@@ -499,7 +503,7 @@ class MainScreen(StaffTabMixin, SearchTabMixin, Screen):
         if not any(t is topic for t in self._view_data.get(f"feed:{feed}") or []):
             return
         t = self.query_one(f"#tbl-{feed}", DataTable)
-        update_topic_row(t, f"topic:{topic.get('id')}", topic, self._title_width(right_reserved=14), self.app.site, with_time=True)
+        update_topic_row(t, f"topic:{topic.get('id')}", topic, self._title_width(FEED_RESERVED), self.app.site, with_time=True)
 
     def _populate_feed(self, feed: str, topics: list[dict], has_more: bool = False, *, redraw: bool = False) -> None:
         """Show a freshly loaded first page, or with ``redraw`` just re-render what's loaded (on resize)."""
@@ -513,8 +517,7 @@ class MainScreen(StaffTabMixin, SearchTabMixin, Screen):
         t = self.query_one(f"#tbl-{feed}", DataTable)
         prev = t.cursor_row
         t.clear()
-        # State(3) + Posts with time under it(11).
-        title_w = self._title_width(right_reserved=14)
+        title_w = self._title_width(FEED_RESERVED)
         for topic in topics:
             self._add_feed_row(t, feed, topic, title_w)
         if not topics:
@@ -561,7 +564,7 @@ class MainScreen(StaffTabMixin, SearchTabMixin, Screen):
         self._feed_page[feed] = page
         self._feed_has_more[feed] = has_more
         t = self.query_one(f"#tbl-{feed}", DataTable)
-        title_w = self._title_width(right_reserved=14)
+        title_w = self._title_width(FEED_RESERVED)
         for topic in fresh:
             self._add_feed_row(t, feed, topic, title_w)
         if fresh:
@@ -655,14 +658,14 @@ class MainScreen(StaffTabMixin, SearchTabMixin, Screen):
         if not any(x is m for x in self._view_data.get("messages") or []):
             return
         t = self.query_one("#tbl-messages", DataTable)
-        update_topic_row(t, f"topic:{m.get('id')}", m, self._title_width(right_reserved=22))
+        update_topic_row(t, f"topic:{m.get('id')}", m, self._title_width(MESSAGE_RESERVED))
 
     def _populate_messages(self, msgs: list[dict]) -> None:
         self._view_data["messages"] = msgs
         t = self.query_one("#tbl-messages", DataTable)
         prev = t.cursor_row
         t.clear()
-        subj_w = self._title_width(right_reserved=22)
+        subj_w = self._title_width(MESSAGE_RESERVED)
         for m in msgs:
             key = f"topic:{m.get('id')}"
             self._topic_cache[key] = m
@@ -1119,13 +1122,15 @@ class CategoryTopicsScreen(Screen):
     def _unread_fixed(self, topic: dict) -> None:
         key = str(topic.get("id"))
         if self._topics.get(key) is topic:
-            update_topic_row(self.query_one("#tbl-cat", DataTable), key, topic, max(10, (self.size.width or 80) - 26))
+            update_topic_row(self.query_one("#tbl-cat", DataTable), key, topic, self._title_w())
+
+    def _title_w(self) -> int:
+        return max(10, (self.size.width or 80) - CATEGORY_RESERVED)
 
     def _populate(self, topics: list[dict]) -> None:
         t = self.query_one("#tbl-cat", DataTable)
         t.clear()
-        total = self.size.width or 80
-        title_w = max(10, total - 26)
+        title_w = self._title_w()
         for topic in topics:
             key = str(topic.get("id"))
             self._topics[key] = topic
