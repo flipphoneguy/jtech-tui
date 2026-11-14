@@ -702,11 +702,13 @@ class MainScreen(StaffTabMixin, SearchTabMixin, Screen):
             tid = n.get("topic_id")
             key = f"notif:{nid}:{tid or ''}"
             self._topic_cache[key] = n
-            title = topic_title(n)
-            who = (n.get("data") or {}).get("display_username", "") or ""
+            data = n.get("data") or {}
+            reqpm = bool(data.get("reqpm"))
+            title = data.get("excerpt", "") if reqpm else topic_title(n)
+            who = data.get("display_username", "") or ""
             t.add_row(
                 "·" if n.get("read") else "●",
-                _truncate(self.app.site.notification_name(n.get("notification_type")), 14),
+                "REQ-PM" if reqpm else _truncate(self.app.site.notification_name(n.get("notification_type")), 14),
                 _truncate(who, 14),
                 _truncate(title, title_w),
                 key=key,
@@ -946,6 +948,12 @@ class MainScreen(StaffTabMixin, SearchTabMixin, Screen):
                 self.app.push_screen(ThreadScreen(topic, target_post=target))
             elif self._is_mod_inbox_notif(notif):
                 self._open_mod_inbox()
+                if not notif.get("read"):
+                    self._notif_read_worker(notif)
+            elif (notif.get("data") or {}).get("reqpm"):
+                from .reqpm import ReqpmScreen
+
+                self.app.push_screen(ReqpmScreen(notif["data"].get("username")))
                 if not notif.get("read"):
                     self._notif_read_worker(notif)
         elif not self._search_row_selected(key):

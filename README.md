@@ -93,7 +93,7 @@ Scrolling to the bottom of a list loads the next page.
 | `p` | Go to the post this one replies to |
 | `r` / `t` | Reply to the post / to the topic |
 | `Q` | Quote: opens the post's text. Move with `hjkl` or arrows (`w`/`b` words, `0`/`$` line, `g`/`G` ends), `v` to start selecting, `enter` to add the selection (or the whole post) to your reply, `y` to copy it. Quotes from several posts pile up, and the next `r` or `t` opens your editor with all of them in order so you can write between them. |
-| `enter` or `+` | React (numbers 1–9 pick in the menu; choosing your own reaction removes it) |
+| `enter` or `+` | React (numbers 1–9 pick in the menu; choosing your own reaction removes it). On a system line like "posts were split to a new topic" it opens the link instead. |
 | `V` | Vote in the post's poll; vote again to change it or remove it |
 | `A` | Mark or unmark the post as the solution (when you're allowed) |
 | `J` | Go to the solution |
@@ -131,7 +131,7 @@ Open a profile with `u` on a post, `P` for your own, or from any list of users.
 | `m` | Moderate this user (staff) |
 | `o` | Open in the browser |
 
-**REQ-PM** (jtech's contact exchange). On someone's page: `r` asks for their details (you can tick which kinds), `s` sends yours (you pick which), `x` cancels your request, `d` declines theirs. Your inbox has Requests, Contacts, Shared with, My requests and My card; `enter` on a contact copies it.
+**REQ-PM** (jtech's contact exchange). On someone's page: `r` asks for their details (you can tick which kinds), `s` sends yours (you pick which), `x` cancels your request, `d` declines theirs, `u` stops sharing with them and `f` removes their details from your contacts. Sending updates exactly what they see: what you already shared starts ticked, and the kinds they asked for are marked. Your inbox has Requests, Contacts, Shared with, My requests and My card, and the same keys work on the matching section; `enter` on a contact copies it. `o` opens the page on the website, where you edit your card. REQ-PM notifications open your exchange with that person.
 
 ## For staff
 
@@ -141,7 +141,7 @@ Everything here appears only when you're signed in as staff, and each item only 
 
 In a review item, `enter` shows the available actions. Ones that need a form on the website (suspend, silence, delete user) open the website instead. The post and the staff notes on it scroll like a thread: `n` writes a note in your editor, `D` deletes the highlighted note if it's yours, and `t` opens the topic at that post.
 
-In threads, deleted posts show as one `─── N deleted posts ───` line. `x` or `enter` on it shows them with who deleted each one, and again folds them back. `m` on a deleted post can recover it.
+In threads, deleted posts show as one `─── N deleted posts ───` line. `enter` on it shows them with who deleted each one, and again folds them back. `x` collapses and expands a long deleted post like any other. `m` on a deleted post can recover it.
 
 **In a thread**
 

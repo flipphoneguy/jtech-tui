@@ -513,8 +513,8 @@ class ThreadScreen(SolvedPollsMixin, ThreadModMixin, Screen):
 
     def action_toggle_collapse(self) -> None:
         e = self._current()
-        if e is not None and e.is_deleted:
-            self.stream.toggle_fold(self.stream.cursor)
+        if e is not None and e.folded:
+            self.app.notify("Press enter to show deleted posts.")
         elif e is not None and not e.is_small:
             e.collapsed = not e.collapsed
             self.stream.refresh_entry(e)
@@ -724,7 +724,14 @@ class ThreadScreen(SolvedPollsMixin, ThreadModMixin, Screen):
         if e is not None and e.is_deleted:
             self.stream.toggle_fold(self.stream.cursor)
             return
-        if e is None or e.is_small:
+        if e is not None and e.is_small:
+            links = e.rendered.links if e.rendered else []
+            if len(links) == 1:
+                self.open_link(links[0][1])
+            elif links:
+                self.action_links()
+            return
+        if e is None:
             return
         if e.post.get("yours"):
             self.app.notify("You can't react to your own post.", severity="warning")

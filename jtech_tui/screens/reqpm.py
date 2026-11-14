@@ -35,6 +35,10 @@ INBOX_NAMES = {
     "outgoing": "My requests",
     "card": "My card",
 }
+# Tabs of the website's /reqpm page, for o.
+WEB_TABS = {"incoming": "requests", "received": "contacts", "sent": "shared", "outgoing": "requests", "card": "card"}
+# Inbox row key prefix to section.
+ROW_SECTIONS = {"i": "incoming", "c": "received", "s": "sent", "o": "outgoing"}
 BLOCKED = {
     "pending": "you already have a request waiting",
     "cooldown": "you asked recently; try again later",
@@ -56,6 +60,9 @@ class ReqpmScreen(Screen):
         Binding("s", "share", "Send my details"),
         Binding("x", "cancel", "Cancel request"),
         Binding("d", "decline", "Decline"),
+        Binding("u", "unshare", "Stop sharing"),
+        Binding("f", "forget", "Forget their details"),
+        Binding("o", "open_web", "Browser"),
         Binding("R", "reload", "Reload"),
     ]
 
@@ -69,8 +76,19 @@ class ReqpmScreen(Screen):
 
     def check_action(self, action: str, parameters: tuple) -> bool | None:
         if self._username is None:
-            # In the inbox you answer requests; asking and cancelling happen on a user's page.
-            return action not in ("request", "cancel")
+            # Asking happens on a user's page; the rest only on the section it's about.
+            sec = self._section
+            if action == "request":
+                return False
+            if action in ("share", "decline"):
+                return sec == "incoming"
+            if action == "cancel":
+                return sec == "outgoing"
+            if action == "unshare":
+                return sec == "sent"
+            if action == "forget":
+                return sec == "received"
+            return True
         rel = self._rel
         if action == "request":
             return bool(rel.get("can_request"))
@@ -80,6 +98,10 @@ class ReqpmScreen(Screen):
             return bool((rel.get("outgoing_request") or {}).get("can_cancel"))
         if action == "decline":
             return bool(rel.get("incoming_request"))
+        if action == "unshare":
+            return bool(rel.get("my_shared_method_ids"))
+        if action == "forget":
+            return bool(rel.get("their_methods"))
         return True
 
     def compose(self) -> ComposeResult:
@@ -140,6 +162,8 @@ class ReqpmScreen(Screen):
         shared = set(rel.get("my_shared_method_ids") or [])
         if shared:
             t.append(f"\nYou've shared {len(shared)} of your details with them.", style="dim")
+        if rel.get("their_methods"):
+            t.append("\nenter copies a detail", style="dim")
         self.query_one("#reqpm-head", Static).update(t)
         table = self.query_one("#tbl-reqpm", VimDataTable)
         table.clear(columns=True)
@@ -175,7 +199,12 @@ class ReqpmScreen(Screen):
             head.append(f" {INBOX_NAMES[s]}{badge} ", style=style)
             head.append(" ")
         head.append("  ← → switch", style="dim")
+        if sec == "received":
+            head.append(" · enter copy", style="dim")
+        elif sec != "card":
+            head.append(" · enter open", style="dim")
         self.query_one("#reqpm-head", Static).update(head)
+        self.refresh_bindings()
         table = self.query_one("#tbl-reqpm", VimDataTable)
         table.clear(columns=True)
         rows = self._inbox.get(sec) or []
@@ -235,13 +264,19 @@ class ReqpmScreen(Screen):
 
     # --- actions ---
 
-    def _target(self) -> str | None:
+    def _inbox_row(self, section: str) -> dict | None:
+        """The inbox row under the cursor, if it belongs to ``section``."""
+        key = self._selected_key()
+        prefix, _, rest = key.partition(":")
+        if ROW_SECTIONS.get(prefix) != section:
+            return None
+        return (self._inbox.get(section) or [])[int(rest.split(":")[0])]
+
+    def _target(self, section: str) -> str | None:
         if self._username:
             return self._username
-        key = self._selected_key()
-        if key.startswith("i:"):
-            return (self._inbox.get("incoming") or [])[int(key[2:])]["user"]["username"]
-        return None
+        row = self._inbox_row(section)
+        return row["user"]["username"] if row else None
 
     def action_request(self) -> None:
         if not self._username or not self.check_action("request", ()):
@@ -252,55 +287,117 @@ class ReqpmScreen(Screen):
             if kinds is not None:
                 self._act("Request sent", lambda: self.app.client.reqpm_request(self._username, kinds or None))
 
-        self.app.push_screen(ChecklistModal(f"Ask @{self._username} for (none ticked = anything):", items), done)
+        self.app.push_screen(
+            ChecklistModal(
+                f"Ask @{self._username} for (none ticked = anything):", items,
+                "space tick · enter send request · esc cancel",
+            ),
+            done,
+        )
 
     def action_share(self) -> None:
-        name = self._target()
+        name = self._target("incoming")
         if not name:
             self.app.notify("Pick a request first.")
             return
         if not self._card:
-            self.app.notify("Your card is empty. Add details on the website first.", severity="warning")
+            self.app.notify("Your card is empty. Add details on the website first (o).", severity="warning")
             return
-        already = set(self._rel.get("my_shared_method_ids") or []) if self._username else set()
-        wanted: set[str] = set()
+        # The server makes the ticked set exactly what they see, so whatever they have already stays ticked.
         if self._username:
+            already = set(self._rel.get("my_shared_method_ids") or [])
             wanted = set((self._rel.get("incoming_request") or {}).get("wanted_kinds") or [])
         else:
-            key = self._selected_key()
-            wanted = set((self._inbox.get("incoming") or [])[int(key[2:])].get("wanted_kinds") or [])
+            sent = next((r for r in self._inbox.get("sent") or [] if r["user"]["username"] == name), {})
+            already = set(sent.get("method_ids") or [])
+            wanted = set((self._inbox_row("incoming") or {}).get("wanted_kinds") or [])
+        methods = {str(m["id"]): m for m in self._card if not m.get("unreadable")}
         items = [
-            (str(m["id"]), f"{method_label(m)}: {m.get('value') or ''}",
-             m["id"] in already or (m.get("kind") in wanted) or (not wanted and bool(m.get("share_by_default"))))
-            for m in self._card
-            if not m.get("unreadable")
+            (mid, f"{method_label(m)}: {m.get('value') or ''}" + ("  (asked for)" if m.get("kind") in wanted else ""),
+             m["id"] in already)
+            for mid, m in methods.items()
         ]
 
-        def done(ids: list[str] | None) -> None:
+        def check(ids: list[str]) -> str | None:
             if ids:
-                self._act(f"Sent to @{name}", lambda: self.app.client.reqpm_share(name, [int(i) for i in ids]))
+                return None
+            return "Nothing ticked. To take everything back, use u (stop sharing)." if already else "Tick at least one detail."
 
-        self.app.push_screen(ChecklistModal(f"Send @{name} these details:", items), done)
+        def names(ids: set[int]) -> str:
+            return ", ".join(method_label(methods[str(i)]) for i in sorted(ids) if str(i) in methods)
+
+        def done(ids: list[str] | None) -> None:
+            if ids is None:
+                return
+            picked = {int(i) for i in ids}
+            added, removed = picked - already, already - picked
+            if not added and not removed:
+                self.app.notify("Nothing changed.")
+                return
+            q = f"Send {names(added)} to @{name}" if added else f"Update what @{name} sees"
+            if removed:
+                q += f" and take back {names(removed)}"
+            label = f"Sent to @{name}" if added else f"Updated what @{name} sees"
+            self.app.push_screen(
+                ConfirmModal(q + "?"),
+                lambda ok: ok and self._act(label, lambda: self.app.client.reqpm_share(name, sorted(picked))),
+            )
+
+        title = f"Update what @{name} sees:" if already else f"Send @{name} these details:"
+        self.app.push_screen(ChecklistModal(title, items, "space tick · enter send · esc cancel", validate=check), done)
 
     def action_cancel(self) -> None:
-        req = (self._rel.get("outgoing_request") or {}) if self._username else {}
+        if self._username:
+            req, name = self._rel.get("outgoing_request") or {}, self._username
+        else:
+            req = self._inbox_row("outgoing") or {}
+            name = (req.get("user") or {}).get("username", "")
         if not req.get("can_cancel"):
+            self.app.notify("Pick a request that's still waiting." if not self._username else "Nothing to cancel.")
             return
         self.app.push_screen(
-            ConfirmModal(f"Cancel your request to @{self._username}?"),
+            ConfirmModal(f"Cancel your request to @{name}?"),
             lambda ok: ok and self._act("Request cancelled", lambda: self.app.client.reqpm_cancel(int(req["id"]))),
         )
+
+    def action_unshare(self) -> None:
+        name = self._target("sent")
+        if not name:
+            self.app.notify("Pick someone first.")
+            return
+        self.app.push_screen(
+            ConfirmModal(f"Stop sharing your details with @{name}? They won't be told."),
+            lambda ok: ok and self._act(f"Stopped sharing with @{name}", lambda: self.app.client.reqpm_revoke(name)),
+        )
+
+    def action_forget(self) -> None:
+        name = self._target("received")
+        if not name:
+            self.app.notify("Pick someone first.")
+            return
+        self.app.push_screen(
+            ConfirmModal(f"Remove @{name}'s details from your contacts? They won't be told."),
+            lambda ok: ok and self._act(f"Removed @{name}'s details", lambda: self.app.client.reqpm_forget(name)),
+        )
+
+    def action_open_web(self) -> None:
+        from urllib.parse import quote
+
+        base = f"{self.app.client.base_url}/reqpm"
+        if self._username:
+            self.app.open_url(f"{base}?tab=contacts&user={quote(self._username)}")
+        else:
+            self.app.open_url(f"{base}?tab={WEB_TABS[self._section]}")
 
     def action_decline(self) -> None:
         if self._username:
             req = self._rel.get("incoming_request") or {}
             name = self._username
         else:
-            key = self._selected_key()
-            if not key.startswith("i:"):
+            row = self._inbox_row("incoming")
+            if row is None:
                 self.app.notify("Pick a request first.")
                 return
-            row = (self._inbox.get("incoming") or [])[int(key[2:])]
             req, name = row, row["user"]["username"]
         if not req.get("id"):
             return

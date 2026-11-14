@@ -32,14 +32,23 @@ class FitsScreen:
             self.call_after_refresh(self.fit_box, False)
             return
         over = box.virtual_size.height - box.scrollable_content_region.height
-        # The key hint goes first, then the list shrinks.
-        if over > 0 and hint is not None and hint.display:
-            hint.display = False
-            self.call_after_refresh(self.fit_box, False)
+        if over <= 0:
             return
-        if over > 0 and lists:
-            big = max(lists, key=lambda w: w.outer_size.height)
-            big.styles.max_height = max(3, big.outer_size.height - over)
+        # The list shrinks first; the key hint only goes once the list can't shrink any more.
+        big = max(lists, key=lambda w: w.outer_size.height) if lists else None
+        if big is not None:
+            height = big.outer_size.height
+            target = max(3, height - over)
+            cur = big.styles.max_height
+            if target < height and (cur is None or target < cur.value):
+                big.styles.max_height = target
+                self.call_after_refresh(self.fit_box, False)
+                return
+            if height - over >= 3:
+                # Already shrunk, layout hasn't caught up yet.
+                return
+        if hint is not None and hint.display:
+            hint.display = False
 
 
 class ReactionModal(FitsScreen, ModalScreen[str | None]):

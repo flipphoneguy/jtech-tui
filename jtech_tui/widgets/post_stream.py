@@ -319,7 +319,8 @@ class PostStream(ScrollView, can_focus=True):
         inner = max(10, width - 2)
         opts = console.options.update(width=inner, height=None)
         if e.is_small:
-            e._rendered = None
+            # Only drawn as one line, but rendered for its links (moved posts, merged topics…).
+            e._rendered = render_cooked(e.post.get("cooked") or "", self.site, self.base_url, post=e.post, topic_id=self.topic_id)
             e._body = []
             e._extra = []
             e.height = 2
@@ -557,7 +558,7 @@ class PostStream(ScrollView, can_focus=True):
         if cached is not None:
             return cached
         n = e.run
-        label = f" {n} deleted post{'s' if n != 1 else ''} · x to show "
+        label = f" {n} deleted post{'s' if n != 1 else ''} · enter to show "
         strip = self._rule_strip(
             label, C["rule_sel"] if selected else C["deleted"], C["bar_sel"] if selected else C["deleted"], width
         )

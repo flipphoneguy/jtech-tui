@@ -191,9 +191,10 @@ class JtechApp(App):
         nid = n.get("id") or 0
         if nid > self._last_toast_id and not n.get("read"):
             self._last_toast_id = nid
-            who = (n.get("data") or {}).get("display_username") or (n.get("data") or {}).get("original_username") or ""
-            what = self.site.notification_name(n.get("notification_type"))
-            title = topic_title(n)
+            nd = n.get("data") or {}
+            who = nd.get("display_username") or nd.get("original_username") or ""
+            what = "REQ-PM" if nd.get("reqpm") else self.site.notification_name(n.get("notification_type"))
+            title = nd.get("excerpt", "") if nd.get("reqpm") else topic_title(n)
             line = f"🔔 {'@' + who + ' ' if who else ''}{what}: {title}"
             self.notify(line[:70], timeout=3, markup=False)
 
