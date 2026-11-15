@@ -223,8 +223,6 @@ class JtechApp(App):
         self.notify(f"{prefix}{e}", severity="error")
 
     def reauth(self) -> None:
-        from .screens import LoginScreen
-
         if getattr(self, "_reauthing", False):
             return
         self.cfg.session_cookie = ""
@@ -235,10 +233,7 @@ class JtechApp(App):
             return
         self.cfg.save()
         self.client = self._make_client("")
-        while len(self.screen_stack) > 1:
-            self.pop_screen()
-        self.switch_screen(LoginScreen())
-        self.notify("Session expired, please sign in again.", severity="warning")
+        self._show_login("Session expired, please sign in again.")
 
     @work(thread=True, exclusive=True, group="reauth")
     def _silent_reauth(self) -> None:
@@ -261,12 +256,18 @@ class JtechApp(App):
         self.refresh_site()
 
     def _show_login_after_failed_reauth(self) -> None:
+        self._show_login("Reconnect failed, please sign in again.")
+
+    def _show_login(self, message: str) -> None:
         from .screens import LoginScreen
 
+        if isinstance(self.screen, LoginScreen):
+            return
         while len(self.screen_stack) > 1:
             self.pop_screen()
-        self.switch_screen(LoginScreen())
-        self.notify("Reconnect failed, please sign in again.", severity="warning")
+        # push, not switch: switching away from the default screen empties the stack
+        self.push_screen(LoginScreen())
+        self.notify(message, severity="warning")
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:

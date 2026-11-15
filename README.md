@@ -33,6 +33,8 @@ cd jtech-tui
 pip install -e .
 ```
 
+On distros where the system Python is externally managed (Arch, Debian 12+, Ubuntu 23.04+ and others), plain `pip install` is blocked. Either create a venv first (`python -m venv .venv && . .venv/bin/activate`) and run the same command inside it, or install with `pipx install -e .` or `uv tool install -e .`, which set up their own venv and put `jtech` in `~/.local/bin`.
+
 ## Run
 
 ```sh
