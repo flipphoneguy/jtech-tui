@@ -12,10 +12,12 @@ from textual.binding import Binding
 from textual.screen import Screen
 from textual.widgets import Header, LoadingIndicator, Static
 
+from .. import images
 from ..api import ApiError
 from ..editor import edit_markdown
 from ..util import copy_to_clipboard, internal_target, topic_title, truncate
 from ..widgets import Entry, PostStream
+from .image_viewer import ImageViewerScreen
 from .quote import QuoteModal
 from .composer import (
     ConfirmModal,
@@ -74,6 +76,7 @@ class ThreadScreen(SolvedPollsMixin, ThreadModMixin, Screen):
         Binding("V", "vote", "Vote"),
         Binding("slash", "search_topic", "Find"),
         Binding("L", "links", "Links"),
+        Binding("i", "images", "Images"),
         Binding("u", "user_profile", "Profile"),
         Binding("x", "toggle_collapse", "Collapse"),
         Binding("S", "toggle_spoilers", "Spoilers"),
@@ -490,6 +493,15 @@ class ThreadScreen(SolvedPollsMixin, ThreadModMixin, Screen):
                 self.open_link(links[int(choice)][1])
 
         self.app.push_screen(MenuModal(f"Links in post #{e.number}", items, "enter open · esc cancel"), done)
+
+    def action_images(self) -> None:
+        e = self._current()
+        if e is None or e.rendered is None or not e.rendered.images:
+            return
+        if not images.available():
+            self.app.notify(images.unavailable_message(), severity="warning")
+            return
+        self.app.push_screen(ImageViewerScreen(e.rendered.images, f"Post #{e.number}"))
 
     def open_link(self, url: str) -> None:
         target = internal_target(url, self.app.client.base_url)

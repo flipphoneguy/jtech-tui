@@ -20,6 +20,8 @@ class SolvedPollsMixin:
             return bool(self._data.get("accepted_answers") or self._data.get("accepted_answer"))
         if action == "vote":
             return e is not None and bool(e.post.get("polls"))
+        if action == "images":
+            return e is not None and e.rendered is not None and bool(e.rendered.images)
         return super().check_action(action, parameters)
 
     def solution(self) -> dict | None:

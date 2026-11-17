@@ -15,6 +15,7 @@ class Config:
     session_cookie: str = ""
     username: str = ""
     password: str = ""
+    images: str = "auto"
 
     @staticmethod
     def path() -> Path:

@@ -59,7 +59,7 @@ class Rendered:
     body: RenderableType
     links: list[tuple[str, str]] = field(default_factory=list)
     code_blocks: list[str] = field(default_factory=list)
-    images: list[str] = field(default_factory=list)
+    images: list[tuple[str, str]] = field(default_factory=list)
     has_spoiler: bool = False
     has_details: bool = False
 
@@ -247,7 +247,8 @@ class Renderer:
             return
         src = self._abs(node.get("src"))
         alt = node.get("alt") or "image"
-        self.out.images.append(src)
+        if src:
+            self.out.images.append((alt, src))
         self._append(buf, f" 🖼 {alt} ", Style.parse(STYLES["image"]) + Style(link=src))
 
     def _lightbox(self, node: Node, buf: Text) -> None:
@@ -260,7 +261,7 @@ class Renderer:
         info = _WS.sub(" ", info_n.text()).strip() if info_n else ""
         label = f"🖼 {name}" + (f" · {info}" if info else "")
         if href:
-            self.out.images.append(href)
+            self.out.images.append((name, href))
         if buf.plain and buf.plain[-1] not in " \n":
             buf.append(" ")
         buf.append(label, style=Style.parse(STYLES["image"]) + (Style(link=href) if href else Style()))

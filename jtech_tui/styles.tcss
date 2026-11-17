@@ -203,6 +203,40 @@ ModalScreen #checks {
     background: $panel;
 }
 
+#profile-top {
+    height: auto;
+    background: $panel;
+}
+
+#profile-top #profile-head {
+    width: 1fr;
+}
+
+#profile-avatar {
+    width: auto;
+    height: 4;
+    margin: 0 0 0 1;
+}
+
+/* Image viewer */
+ImageViewerScreen #loader {
+    height: 1;
+}
+
+#viewer-box {
+    height: 1fr;
+    align: center middle;
+}
+
+#viewer-img {
+    width: auto;
+    height: auto;
+}
+
+#viewer-error {
+    padding: 1 2;
+}
+
 #profile-sections {
     height: 1;
     margin: 1 0 0 0;

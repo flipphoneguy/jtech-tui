@@ -8,6 +8,7 @@ from textual import events, work
 from textual.app import App
 from textual.binding import Binding
 
+from . import images
 from .api import ApiError, Client, RateLimited, Unauthorized
 from .config import Config
 from .live import LiveBus
@@ -277,11 +278,14 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         choices=["latest", "unseen", "categories", "messages", "notifications"],
         help="starting tab",
     )
+    ap.add_argument("--images", choices=images.MODES, help="how to draw images (default: auto)")
     return ap.parse_args(argv)
 
 
 def run() -> None:
     args = _parse_args(sys.argv[1:])
+    mode = args.images or Config.load().images
+    images.setup(mode if mode in images.MODES else "auto")
     JtechApp(starting_feed=args.feed).run()
 
 

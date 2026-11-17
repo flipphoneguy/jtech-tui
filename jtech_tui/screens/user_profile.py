@@ -4,10 +4,11 @@ from rich.text import Text
 from textual import on, work
 from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.containers import VerticalScroll
+from textual.containers import Horizontal, VerticalScroll
 from textual.screen import Screen
 from textual.widgets import DataTable, Header, LoadingIndicator, Static
 
+from .. import images
 from ..api import ApiError
 from ..render import plain_text, render_cooked
 from ..util import parse_time, parse_when, time_ago, truncate
@@ -41,6 +42,7 @@ class UserProfileScreen(Screen):
         Binding("m", "moderate", "Moderate"),
         Binding("o", "open_web", "Browser"),
         Binding("y", "copy_link", "Copy link"),
+        Binding("i", "images", "Images"),
         Binding("R", "reload", "Reload"),
     ]
 
@@ -71,7 +73,10 @@ class UserProfileScreen(Screen):
     def compose(self) -> ComposeResult:
         yield Header()
         yield LoadingIndicator(id="loader")
-        yield Static(id="profile-head")
+        with Horizontal(id="profile-top"):
+            if images.graphics():
+                yield images.widget(id="profile-avatar")
+            yield Static(id="profile-head")
         yield Static(id="profile-sections")
         yield VimDataTable(id="tbl-profile", cursor_type="row", zebra_stripes=True)
         with VerticalScroll(id="profile-bio"):
@@ -95,6 +100,37 @@ class UserProfileScreen(Screen):
     def action_open_web(self) -> None:
         self.app.open_url(f"{self.app.client.base_url}/u/{self._username}")
 
+    def _avatar_url(self, size: int) -> str:
+        return (self._user.get("avatar_template") or "").replace("{size}", str(size))
+
+    def action_images(self) -> None:
+        if not images.available():
+            self.app.notify(images.unavailable_message(), severity="warning")
+            return
+        u = self._user
+        items = [(label, url) for label, url in (
+            ("Avatar", self._avatar_url(360)),
+            ("Profile background", u.get("profile_background_upload_url")),
+            ("Card background", u.get("card_background_upload_url")),
+        ) if url]
+        if not items:
+            return
+        from .image_viewer import ImageViewerScreen
+
+        self.app.push_screen(ImageViewerScreen(items, f"@{self._username}"))
+
+    @work(thread=True, exclusive=True, group="avatar")
+    def _load_avatar(self, url: str) -> None:
+        try:
+            img = images.fetch(self.app.client, url)
+        except Exception:  # noqa: BLE001
+            return
+        self.app.call_from_thread(self._set_avatar, img)
+
+    def _set_avatar(self, img) -> None:
+        for w in self.query("#profile-avatar"):
+            w.image = img
+
     # --- loading ---
 
     @work(thread=True, exclusive=True, group="profile")
@@ -115,6 +151,8 @@ class UserProfileScreen(Screen):
         self._user = user
         self._summary = summary
         self.query_one("#loader").display = False
+        if images.graphics() and self._avatar_url(96):
+            self._load_avatar(self._avatar_url(96))
         self._render_head()
         self._load_section()
         self.refresh_bindings()

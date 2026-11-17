@@ -11,6 +11,7 @@ Read and reply to threads, react, search, follow people, swap contact cards with
 - **Live updates.** The app listens on the same MessageBus channel the website uses. New replies show up in the thread you're reading within a second or two, the notification count updates by itself, and Latest/Unseen show how many new topics arrived. A small toast pops up for a few seconds when a notification comes in.
 - **A thread view that stays put.** Threads open on your first unread post, under a `─── last visit ───` line, and stay there while older posts load above. Posts are drawn line by line, so long threads stay fast.
 - **Posts look like posts.** Quotes show who wrote them, link previews show the site and title, code is highlighted, images show their name and size, spoilers stay hidden until you reveal them, and dates appear in your own timezone.
+- **Images, optionally.** With the `images` extra, `i` shows a post's images full screen, and profiles show the user's avatar. Terminals with sixel or kitty graphics get real pictures; others get a half-block version in the viewer.
 - **Polls and solutions.** Vote in polls and see the results, mark a reply as the solution, and jump straight to a topic's solution.
 - **Everything the server allows, nothing it doesn't.** Reactions, flag types, notification types and categories come from the forum itself. Edit, delete and every mod action are offered only when the server says you can do them.
 - **jtech's custom emoji.** `meh` and `jtechforums` render as small colored badges instead of `:meh:`.
@@ -33,6 +34,8 @@ cd jtech-tui
 pip install -e .
 ```
 
+For images, install with the extra instead: `pip install -e '.[images]'`. It needs Python 3.12+ and Pillow. On Termux, run `pkg install python-pillow` first, since pip can't build Pillow there.
+
 On distros where the system Python is externally managed (Arch, Debian 12+, Ubuntu 23.04+ and others), plain `pip install` is blocked. Either create a venv first (`python -m venv .venv && . .venv/bin/activate`) and run the same command inside it, or install with `pipx install -e .` or `uv tool install -e .`, which set up their own venv and put `jtech` in `~/.local/bin`.
 
 ## Run
@@ -40,9 +43,10 @@ On distros where the system Python is externally managed (Arch, Debian 12+, Ubun
 ```sh
 jtech                   # opens your default tab
 jtech --feed unseen     # start on a specific tab
+jtech --images off      # don't draw images this time
 ```
 
-`--feed` takes `latest`, `unseen`, `categories`, `messages` or `notifications`.
+`--feed` takes `latest`, `unseen`, `categories`, `messages` or `notifications`. `--images` takes `auto`, `kitty`, `sixel`, `halfblock` or `off` and overrides the config.
 
 The first launch asks for your username and password, plus a 2FA code if your account has one. Tick "Remember me" to let the app sign in again by itself when the session runs out.
 
@@ -101,6 +105,7 @@ Scrolling to the bottom of a list loads the next page.
 | `J` | Go to the solution |
 | `l` | Who reacted |
 | `L` | Links in the post (forum links open in the app, others in the browser) |
+| `i` | View the post's images (`←` / `→` between them, `o` opens one in the browser, `esc` back). Needs the `images` extra. |
 | `y` | Copy the post's link |
 | `Y` | Copy menu: the post's markdown, any code block, or any link (straight to the markdown when there are none) |
 | `o` | Open the post in the browser |
@@ -131,7 +136,10 @@ Open a profile with `u` on a post, `P` for your own, or from any list of users.
 | `c` | REQ-PM with this user (on your own profile: your REQ-PM inbox) |
 | `s` | Set or clear your status (your own profile) |
 | `m` | Moderate this user (staff) |
+| `i` | View the avatar and profile backgrounds full size |
 | `o` | Open in the browser |
+
+With the `images` extra on a sixel or kitty terminal, the avatar shows next to the name.
 
 **REQ-PM** (jtech's contact exchange). On someone's page: `r` asks for their details (you can tick which kinds), `s` sends yours (you pick which), `x` cancels your request, `d` declines theirs, `u` stops sharing with them and `f` removes their details from your contacts. Sending updates exactly what they see: what you already shared starts ticked, and the kinds they asked for are marked. Your inbox has Requests, Contacts, Shared with, My requests and My card, and the same keys work on the matching section; `enter` on a contact copies it. `o` opens the page on the website, where you edit your card. REQ-PM notifications open your exchange with that person.
 
@@ -171,6 +179,7 @@ In threads, deleted posts show as one `─── N deleted posts ───` line
 | `session_cookie` | | Your session; kept up to date as the forum rotates it |
 | `username` | | Your username |
 | `password` | | Only saved with "Remember me", in plain text |
+| `images` | `auto` | `auto` picks kitty or sixel when the terminal supports them, otherwise half blocks. Also `kitty`, `sixel`, `halfblock` or `off`. |
 
 Forum data that rarely changes (categories, emoji, notification types) is cached in `~/.cache/jtech-tui/<host>/` and refreshed in the background. Real unread counts are kept there too, in `unread.json`.
 

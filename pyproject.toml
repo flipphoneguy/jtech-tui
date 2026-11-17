@@ -9,6 +9,9 @@ dependencies = [
     "requests>=2.31",
 ]
 
+[project.optional-dependencies]
+images = ["textual-image>=0.14; python_version >= '3.12'"]
+
 [project.scripts]
 jtech = "jtech_tui.app:run"
 

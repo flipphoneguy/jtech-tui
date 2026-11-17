@@ -51,7 +51,7 @@ def collect_screen_bindings(screen, app) -> list[tuple[str, str]]:
             if b.key in seen:
                 continue
             seen.add(b.key)
-            out.append((key_label(b.key), b.description))
+            out.append((b.key_display or key_label(b.key), b.description))
     return out
 
 
